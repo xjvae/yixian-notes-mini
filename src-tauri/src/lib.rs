@@ -18,6 +18,7 @@
 // 兄弟实例活着时绝不重复注册。
 
 mod commands;
+mod data;
 mod db;
 mod hotkeys;
 mod support;
@@ -27,6 +28,7 @@ mod windows;
 use tauri::Manager;
 
 use crate::db::pool::Db;
+use crate::support::log;
 
 pub fn run() {
     tauri::Builder::default()
@@ -51,7 +53,9 @@ pub fn run() {
             let dir = handle.path().app_data_dir()?;
             // 日志落盘排在所有事之前：真机报障时能还原现场的只有这份文件
             support::log::init(&dir);
-            support::log::info("app", "应用启动");
+            log::info("app", "应用启动");
+            // 私密层状态扫描：盘上有合法封套才算"配置过"（损坏按没配置算，现场进日志）
+            app.manage(data::private::PrivateVault::scan(&dir));
             match db::Db::open(&dir) {
                 Ok(database) => {
                     match db::migrate::run(&database) {
@@ -130,6 +134,14 @@ pub fn run() {
             commands::entity::sticky_delete,
             commands::entity::trash_restore,
             commands::search::search_query,
+            commands::private::private_status,
+            commands::private::private_setup,
+            commands::private::private_unlock,
+            commands::private::private_lock,
+            commands::private::private_load,
+            commands::private::private_save,
+            commands::private::private_rekey,
+            commands::private::private_reset,
             commands::window::create_floating_sticky,
             commands::window::open_floating_sticky,
             commands::window::close_floating_sticky,
@@ -139,6 +151,8 @@ pub fn run() {
             commands::window::close_search_window,
             commands::window::open_settings_window,
             commands::window::close_settings_window,
+            commands::window::open_unlock_window,
+            commands::window::close_unlock_window,
             commands::window::float_dock_register,
             commands::window::float_dock_unregister,
             commands::window::monitor_work_area,

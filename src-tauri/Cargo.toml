@@ -21,6 +21,11 @@ tauri-plugin-single-instance = "2.4"
 tauri-plugin-global-shortcut = "2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+# 私密层：Argon2id 派生密钥 + AES-256-GCM 封套（data/crypto.rs、data/private.rs）
+argon2 = "0.5"
+aes-gcm = "0.10"
+base64 = "0.22"
+zeroize = "1.8"
 # bundled SQLite：与 TS 检索（FTS5 中文二字组，ROADMAP M2）共用一个编译单元
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 # Win32：monitor_work_area 取工作区（贴边细丝不压任务栏）

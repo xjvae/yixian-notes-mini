@@ -105,8 +105,24 @@ export interface WorkArea {
   height: number;
 }
 
+/** 私密便签锁在 private.json 里的真身。其余字段（几何/主题/标记）留在主库明文 */
+export interface SealedText {
+  title: string;
+  body: string;
+  items: StickyItem[];
+  timeline: TimelineEntry[];
+  tags: string[];
+}
+
+/** 私密层状态：configured = 盘上有封套；unlocked = 会话密钥在内存里 */
+export interface PrivateStatus {
+  configured: boolean;
+  unlocked: boolean;
+}
+
 /** 事件名常量：拼错是编译错误 */
 export const DB_CHANGED = "db:changed";
+export const PRIVATE_CHANGED = "store:private-changed";
 
 /** 窗口注入的全局名（factory.rs 的初始化脚本写入）——跨语言契约 */
 export const STICKY_ID_GLOBAL = "__STICKY_ID__";

@@ -163,6 +163,15 @@ async function refreshFromRemote(): Promise<void> {
   }
 }
 
+/**
+ * 主动重拉（私密层解锁/锁定后由 boot 接线触发）：后端包装层负责按新的私密状态
+ * 重新合并/隐去内容，这里只管"按当前后端口径重读一遍"。
+ */
+export async function refreshStore(): Promise<void> {
+  if (!hydrated) return;
+  await refreshFromRemote();
+}
+
 // —— 写 ——
 
 /**

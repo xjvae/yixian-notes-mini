@@ -7,10 +7,12 @@
 import { type ReactNode, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { ErrorBoundary } from "@/ui/error-boundary";
+import { initPrivateState, onPrivateLayerChange } from "@/data/private-state";
 import { initScheme } from "@/data/scheme";
 import { describeError } from "@/platform/errors";
 import { createTauriBackend } from "@/store/backend";
-import { hydrateStore, initStore } from "@/store/notes-store";
+import { refreshStore, hydrateStore, initStore } from "@/store/notes-store";
+import { withPrivateLayer } from "@/store/private-backend";
 import "@/index.css";
 
 function clearBootStatus(): void {
@@ -60,8 +62,12 @@ export async function boot({
     return;
   }
   try {
-    initStore(createTauriBackend());
+    // 私密层包装在 Backend 上：读写拆合对 store 与视图透明
+    initStore(withPrivateLayer(createTauriBackend()));
     await initScheme();
+    await initPrivateState();
+    // 解锁/锁定/改密后重拉：包装层按新的私密状态重新合并或隐去内容
+    onPrivateLayerChange(() => void refreshStore());
     await hydrateStore();
     mount();
   } catch (error) {

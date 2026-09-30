@@ -5,8 +5,9 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager};
 
+use crate::data::private::PrivateVault;
 use crate::db::pool::Db;
-use crate::windows::{float, search, settings, trash};
+use crate::windows::{float, search, settings, trash, unlock};
 
 pub fn build(app: &AppHandle) -> tauri::Result<()> {
     let new_i = MenuItem::with_id(app, "new-sticky", "新建便签", true, None::<&str>)?;
@@ -58,6 +59,20 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
                 tauri::async_runtime::spawn(async move {
                     if let Err(e) = settings::open(&app).await {
                         crate::support::log::warn("tray", &format!("打开设置失败：{e}"));
+                    }
+                });
+            }
+            "lock" => {
+                // 无论配没配过口令都开口令窗：没配过的人看到「设置私密密码」表单——
+                // "锁了没反应"与"根本没锁"在界面上必须分得开。
+                use tauri::Emitter;
+                let vault = app.state::<PrivateVault>().inner().clone();
+                crate::data::private::lock(&vault);
+                let _ = app.emit("store:private-changed", "tray");
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = unlock::open(&app).await {
+                        crate::support::log::warn("tray", &format!("开口令窗失败：{e}"));
                     }
                 });
             }

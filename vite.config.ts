@@ -3,8 +3,9 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
-// 入口 = 窗口类型。main（便签浮窗）、trash（回收站）、search（搜索）、settings（设置）；
-// 星环/解锁随 ROADMAP 各期加入，加入时 Rust 侧 WindowSpec 的 url 必须与这里一一对应。
+// 入口 = 窗口类型。main（便签浮窗）、trash（回收站）、search（搜索）、
+// settings（设置）、unlock（口令窗）；星环随 M4 加入，
+// 加入时 Rust 侧 WindowSpec 的 url 必须与这里一一对应。
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   base: "./",
@@ -25,6 +26,7 @@ export default defineConfig({
         trash: path.resolve(__dirname, "trash.html"),
         search: path.resolve(__dirname, "search.html"),
         settings: path.resolve(__dirname, "settings.html"),
+        unlock: path.resolve(__dirname, "unlock.html"),
       },
       output: {
         entryFileNames: "assets/[name]-[hash].js",

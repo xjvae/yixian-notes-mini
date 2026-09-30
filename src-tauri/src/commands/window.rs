@@ -11,7 +11,7 @@ use windows::Win32::Graphics::Gdi::{
 
 use crate::db::pool::Db;
 use crate::support::error::{AppError, AppResult};
-use crate::windows::{dock::DockLayout, float, search, settings, trash};
+use crate::windows::{dock::DockLayout, float, search, settings, trash, unlock};
 
 #[tauri::command]
 pub async fn create_floating_sticky(app: AppHandle, db: State<'_, Db>) -> AppResult<String> {
@@ -58,6 +58,16 @@ pub async fn open_settings_window(app: AppHandle) -> AppResult<()> {
 #[tauri::command]
 pub async fn close_settings_window(app: AppHandle) -> AppResult<()> {
     settings::close(&app).await
+}
+
+#[tauri::command]
+pub async fn open_unlock_window(app: AppHandle) -> AppResult<()> {
+    unlock::open(&app).await
+}
+
+#[tauri::command]
+pub async fn close_unlock_window(app: AppHandle) -> AppResult<()> {
+    unlock::close(&app).await
 }
 
 // —— 贴边 ——

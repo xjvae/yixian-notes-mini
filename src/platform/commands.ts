@@ -3,6 +3,7 @@
 
 import type {
   Bootstrap,
+  PrivateStatus,
   SearchHit,
   StickyInput,
   StickyNote,
@@ -115,4 +116,53 @@ export function floatDockUnregister(id: string): Promise<void> {
 /** 当前显示器工作区（物理像素） */
 export function monitorWorkArea(): Promise<WorkArea> {
   return invoke<WorkArea>("monitor_work_area");
+}
+
+// —— 私密层 ——
+
+export function privateStatus(): Promise<PrivateStatus> {
+  return invoke<PrivateStatus>("private_status");
+}
+
+/** 首次设置私密密码（成功即进入解锁会话） */
+export function privateSetup(password: string): Promise<void> {
+  return invoke<void>("private_setup", { password });
+}
+
+export function privateUnlock(password: string): Promise<void> {
+  return invoke<void>("private_unlock", { password });
+}
+
+export function privateLock(): Promise<void> {
+  return invoke<void>("private_lock");
+}
+
+/** 私密内容整份 JSON map（string → SealedText）。未解锁会拒绝 */
+export function privateLoad(): Promise<string> {
+  return invoke<string>("private_load");
+}
+
+/** 私密内容整份重写（fresh nonce 重加密） */
+export function privateSave(data: string): Promise<void> {
+  return invoke<void>("private_save", { data });
+}
+
+/** 修改密码（需已解锁） */
+export function privateRekey(password: string): Promise<void> {
+  return invoke<void>("private_rekey", { password });
+}
+
+/** 重置（忘记密码的唯一出路）：清空全部私密内容 */
+export function privateReset(password: string): Promise<void> {
+  return invoke<void>("private_reset", { password });
+}
+
+// —— 口令窗 ——
+
+export function openUnlockWindow(): Promise<void> {
+  return invoke<void>("open_unlock_window");
+}
+
+export function closeUnlockWindow(): Promise<void> {
+  return invoke<void>("close_unlock_window");
 }

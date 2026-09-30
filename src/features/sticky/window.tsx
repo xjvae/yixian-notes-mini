@@ -14,6 +14,8 @@ import {
   ChevronDown,
   History,
   ListChecks,
+  Lock,
+  LockOpen,
   PanelLeftClose,
   TextIcon,
   Trash2,
@@ -27,6 +29,8 @@ import { describeDue } from "@/data/due";
 import { BODY_MAX, shouldShowCount } from "@/data/limit";
 import { normalizeTagInput, tagInk } from "@/data/tags";
 import { useNow } from "@/features/sticky/use-now";
+import { usePrivateState } from "@/data/private-state";
+import { openUnlockWindow } from "@/platform/commands";
 import { TodoBody } from "@/features/sticky/todo-body";
 import { TimelineBody } from "@/features/sticky/timeline-body";
 import { ReminderFields } from "@/features/sticky/reminder-fields";
@@ -63,6 +67,7 @@ export function StickyWindow() {
   const failures = useWriteFailures();
   const now = useNow();
   const { resolved } = useScheme();
+  const priv = usePrivateState();
 
   /** 收起形态只认本地开关：展开尺寸记在行里，收起栏的高度不该写回去 */
   const [minimized, setMinimized] = useState(() => note?.collapsed ?? false);
@@ -194,6 +199,26 @@ export function StickyWindow() {
     note.contentType === "reminder" && due.state !== "none" && due.state !== "done";
   const dueUrgent = due.state === "overdue" || due.state === "today";
 
+  /** 私密遮罩：真身不在内存（未启用/未解锁）时内容区整体换成遮罩 */
+  const masked = note.private && (!priv.active || !priv.unlocked);
+
+  /** 标记/取消私密。标记需要私密层就绪，否则当场开口令窗引导（窗口分相位）；
+   * 取消同样要解锁——锁定态下手上的本就是空占位，写回公开等于把内容抹掉。
+   * 普通函数而非 useCallback：它位于早退之后，挂钩子会违反 Hooks 顺序纪律。 */
+  const togglePrivate = (): void => {
+    if (note.private && (priv.active ? priv.unlocked : true)) {
+      updateNote(id, { private: false });
+      return;
+    }
+    if (!note.private && priv.active && priv.unlocked) {
+      updateNote(id, { private: true });
+      return;
+    }
+    void openUnlockWindow().catch((error: unknown) =>
+      logger.caught(SCOPE, "开口令窗失败", error),
+    );
+  };
+
   const switchType = (to: StickyContentType): void => {
     updateNote(id, conversionPatch(note, to));
   };
@@ -215,6 +240,59 @@ export function StickyWindow() {
       {due.text}
     </span>
   ) : null;
+
+  if (masked) {
+    // 遮罩态：真身不在内存，标题/正文/标签区整体换成锁面。标签芯片与类型切换
+    // 一并隐藏（它们此刻也是空占位，画出来就是撒谎）。
+    return (
+      <WindowChrome
+        background={theme.paper}
+        accent={theme.accent}
+        collapsed={minimized}
+        title="私密便签"
+        leading={<StickyLeading accent={theme.accent} />}
+        pinned={note.pinned}
+        onTogglePin={handleTogglePin}
+        onExpand={handleExpand}
+        onClose={handleClose}
+        onBodyClick={
+          dock.docked && !dock.revealed ? () => dock.toggleReveal() : undefined
+        }
+        bodyClickLabel="滑出便签"
+      >
+        <div className="flex h-full flex-col items-center justify-center gap-3">
+          <Lock size={22} aria-hidden style={{ color: theme.accent }} />
+          <p className="text-xs font-medium" style={{ color: theme.ink }}>
+            已锁定 · 私密便签
+          </p>
+          <button
+            type="button"
+            onClick={() =>
+              void openUnlockWindow().catch((error: unknown) =>
+                logger.caught(SCOPE, "开口令窗失败", error),
+              )
+            }
+            className="rounded-md px-4 py-1.5 text-xs font-medium transition-opacity hover:opacity-80"
+            style={{ backgroundColor: theme.accent, color: theme.paper }}
+          >
+            解锁
+          </button>
+          <div className="mt-2 flex items-center gap-1">
+            <button
+              type="button"
+              aria-label="删除便签"
+              title="删除（可在回收站恢复）"
+              onClick={handleDelete}
+              className="rounded p-1 transition-colors hover:bg-black/10"
+              style={{ color: theme.accent }}
+            >
+              <Trash2 size={14} aria-hidden />
+            </button>
+          </div>
+        </div>
+      </WindowChrome>
+    );
+  }
 
   return (
     <WindowChrome
@@ -409,6 +487,20 @@ export function StickyWindow() {
               <PanelLeftClose size={14} aria-hidden />
             </button>
           )}
+          <button
+            type="button"
+            aria-label={note.private ? "取消私密" : "标记私密"}
+            title={note.private ? "取消私密" : "标记私密"}
+            onClick={togglePrivate}
+            className="rounded p-1 transition-colors hover:bg-black/10"
+            style={{ color: theme.accent }}
+          >
+            {note.private ? (
+              <LockOpen size={14} aria-hidden />
+            ) : (
+              <Lock size={14} aria-hidden />
+            )}
+          </button>
           {!dock.docked && (
             <button
               type="button"

@@ -35,4 +35,11 @@ impl From<tauri::Error> for AppError {
     }
 }
 
+/// 读封套那层返回带现场描述的 String 错误——折成统一形状（code 固定，message 保留现场）
+impl From<String> for AppError {
+    fn from(message: String) -> Self {
+        Self::new("PRIVATE_READ", message)
+    }
+}
+
 pub type AppResult<T> = Result<T, AppError>;
