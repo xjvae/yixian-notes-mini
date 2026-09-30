@@ -1,7 +1,7 @@
 // 校验 — 库里读出来的行在进 store 前过一遍归一化：形状不对的字段就地修，
 // 修不了的行整体丢弃并留一条 warn。原则：绝不让一条坏数据换来一个白窗口。
 
-import type { StickyItem, StickyNote } from "@/platform/contracts";
+import type { StickyItem, StickyNote, TimelineEntry } from "@/platform/contracts";
 import { isStickyContentType } from "@/data/entities";
 import { themeOf, THEME_KEYS } from "@/data/theme";
 import { logger } from "@/platform/logger";
@@ -37,6 +37,22 @@ function normalizeTags(value: unknown): string[] {
   return value.filter((tag): tag is string => typeof tag === "string");
 }
 
+function normalizeTimeline(value: unknown): TimelineEntry[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((raw): TimelineEntry[] => {
+    if (typeof raw !== "object" || raw === null) return [];
+    const entry = raw as Partial<TimelineEntry>;
+    if (typeof entry.id !== "string" || typeof entry.text !== "string") return [];
+    return [
+      {
+        id: entry.id,
+        at: asIntOrNull(entry.at) ?? 0,
+        text: entry.text,
+      },
+    ];
+  });
+}
+
 /**
  * 归一化一行。返回 null 表示这行坏到没法用（调用方跳过它，不要写回去——
  * 写回去会把这个判定变成"每次读都改一次库"）。
@@ -56,6 +72,7 @@ export function normalizeSticky(row: StickyNote): StickyNote | null {
     body: typeof row.body === "string" ? row.body : "",
     contentType: isStickyContentType(row.contentType) ? row.contentType : "text",
     items: normalizeItems(row.items),
+    timeline: normalizeTimeline(row.timeline),
     tags: normalizeTags(row.tags),
     theme,
     pinned: asBool(row.pinned, true),

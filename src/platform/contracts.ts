@@ -16,6 +16,14 @@ export interface StickyItem {
   done: boolean;
 }
 
+/** 时间轴条目：这一类便签的正文（带时刻）。id 稳定供 React key */
+export interface TimelineEntry {
+  id: string;
+  /** 时刻，epoch ms */
+  at: number;
+  text: string;
+}
+
 /** 便签完整形状（读返回 / store 内存态共用这一份） */
 export interface StickyNote {
   id: string;
@@ -23,6 +31,8 @@ export interface StickyNote {
   body: string;
   contentType: StickyContentType;
   items: StickyItem[];
+  /** 时间轴条目（timeline 类的正文）；其它类型恒为 [] */
+  timeline: TimelineEntry[];
   tags: string[];
   theme: string;
   /** 窗口置顶（老用户口中"钉住"） */

@@ -33,6 +33,7 @@ export function createDefaultSticky(id: string, now: number): StickyNote {
     body: "",
     contentType: "text",
     items: [],
+    timeline: [],
     tags: [],
     theme: THEME_KEYS[0],
     pinned: true,
