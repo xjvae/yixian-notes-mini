@@ -13,12 +13,13 @@ pub fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-const COLS: &str = "id, title, body, content_type, items_json, tags_json, theme, pinned, \
-                    floating, collapsed, private, group_id, x, y, width, height, due_at, \
+const COLS: &str = "id, title, body, content_type, items_json, timeline_json, tags_json, theme, \
+                    pinned, floating, collapsed, private, group_id, x, y, width, height, due_at, \
                     done_at, repeat, deleted, deleted_at, created_at, updated_at";
 
 fn row_to_sticky(row: &rusqlite::Row) -> rusqlite::Result<StickyRow> {
     let items_json: String = row.get("items_json")?;
+    let timeline_json: String = row.get("timeline_json")?;
     let tags_json: String = row.get("tags_json")?;
     Ok(StickyRow {
         id: row.get("id")?,
@@ -26,6 +27,7 @@ fn row_to_sticky(row: &rusqlite::Row) -> rusqlite::Result<StickyRow> {
         body: row.get("body")?,
         content_type: row.get("content_type")?,
         items: serde_json::from_str(&items_json).unwrap_or_default(),
+        timeline: serde_json::from_str(&timeline_json).unwrap_or_default(),
         tags: serde_json::from_str(&tags_json).unwrap_or_default(),
         theme: row.get("theme")?,
         pinned: row.get::<_, i64>("pinned")? != 0,
@@ -77,6 +79,8 @@ pub fn upsert(db: &Db, input: StickyInput) -> AppResult<StickyRow> {
     let now = now_ms();
     let items = serde_json::to_string(&input.items)
         .map_err(|e| AppError::new("DB_SQL", format!("items 序列化失败：{e}")))?;
+    let timeline = serde_json::to_string(&input.timeline)
+        .map_err(|e| AppError::new("DB_SQL", format!("timeline 序列化失败：{e}")))?;
     let tags = serde_json::to_string(&input.tags)
         .map_err(|e| AppError::new("DB_SQL", format!("tags 序列化失败：{e}")))?;
     let deleted_at_on_insert = if input.deleted { Some(now) } else { None };
@@ -84,33 +88,34 @@ pub fn upsert(db: &Db, input: StickyInput) -> AppResult<StickyRow> {
         let conn = db.lock();
         conn.execute(
             "INSERT INTO stickies (
-                id, title, body, content_type, items_json, tags_json, theme,
+                id, title, body, content_type, items_json, timeline_json, tags_json, theme,
                 pinned, floating, collapsed, private, group_id,
                 x, y, width, height, due_at, done_at, repeat,
                 deleted, deleted_at, created_at, updated_at
             ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7,
-                ?8, ?9, ?10, ?11, ?12,
-                ?13, ?14, ?15, ?16, ?17, ?18, ?19,
-                ?20, ?21, ?22, ?23
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+                ?9, ?10, ?11, ?12, ?13,
+                ?14, ?15, ?16, ?17, ?18, ?19, ?20,
+                ?21, ?22, ?23, ?24
             )
             ON CONFLICT(id) DO UPDATE SET
-                title = ?2, body = ?3, content_type = ?4, items_json = ?5, tags_json = ?6,
-                theme = ?7, pinned = ?8, floating = ?9, collapsed = ?10, private = ?11,
-                group_id = ?12, x = ?13, y = ?14, width = ?15, height = ?16,
-                due_at = ?17, done_at = ?18, repeat = ?19, deleted = ?20,
+                title = ?2, body = ?3, content_type = ?4, items_json = ?5, timeline_json = ?6,
+                tags_json = ?7, theme = ?8, pinned = ?9, floating = ?10, collapsed = ?11,
+                private = ?12, group_id = ?13, x = ?14, y = ?15, width = ?16, height = ?17,
+                due_at = ?18, done_at = ?19, repeat = ?20, deleted = ?21,
                 deleted_at = CASE
-                    WHEN ?20 = 1 AND deleted_at IS NULL THEN ?23
-                    WHEN ?20 = 0 THEN NULL
+                    WHEN ?21 = 1 AND deleted_at IS NULL THEN ?24
+                    WHEN ?21 = 0 THEN NULL
                     ELSE deleted_at
                 END,
-                updated_at = ?23",
+                updated_at = ?24",
             params![
                 input.id,
                 input.title,
                 input.body,
                 input.content_type,
                 items,
+                timeline,
                 tags,
                 input.theme,
                 input.pinned as i64,
@@ -155,14 +160,18 @@ pub fn delete(db: &Db, id: &str, hard: bool) -> AppResult<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::models::StickyItem;
+    use crate::db::models::{StickyItem, TimelineEntry};
     use rusqlite::Connection;
 
     fn db_with_schema() -> Db {
         let db = Db::from_connection(Connection::open_in_memory().expect("内存库"));
+        // 与生产同序：全量迁移，别只建 v1（upsert 写的是当前 schema）
         db.lock()
             .execute_batch(include_str!("../../../migrations/0001_init.sql"))
             .expect("建表");
+        db.lock()
+            .execute_batch(include_str!("../../../migrations/0002_timeline.sql"))
+            .expect("补列");
         db
     }
 
@@ -176,6 +185,11 @@ mod tests {
                 id: "i1".into(),
                 text: "条目".into(),
                 done: false,
+            }],
+            timeline: vec![TimelineEntry {
+                id: "t1".into(),
+                at: 1_700_000_000_000,
+                text: "节点".into(),
             }],
             tags: vec!["工作".into()],
             theme: "yellow".into(),
@@ -202,6 +216,8 @@ mod tests {
         assert_eq!(row.id, "s1");
         assert_eq!(row.items.len(), 1);
         assert_eq!(row.items[0].text, "条目");
+        assert_eq!(row.timeline.len(), 1);
+        assert_eq!(row.timeline[0].text, "节点");
         assert_eq!(row.tags, vec!["工作"]);
         assert!(row.created_at > 0 && row.updated_at >= row.created_at);
         assert!(row.deleted_at.is_none());

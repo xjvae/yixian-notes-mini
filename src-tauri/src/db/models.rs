@@ -13,6 +13,15 @@ pub struct StickyItem {
     pub done: bool,
 }
 
+/// 时间轴条目：这一类便签的正文（带时刻）。id 稳定供 React key。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct TimelineEntry {
+    pub id: String,
+    /// 时刻，epoch ms
+    pub at: i64,
+    pub text: String,
+}
+
 /// 读返回：完整行
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -22,6 +31,7 @@ pub struct StickyRow {
     pub body: String,
     pub content_type: String,
     pub items: Vec<StickyItem>,
+    pub timeline: Vec<TimelineEntry>,
     pub tags: Vec<String>,
     pub theme: String,
     pub pinned: bool,
@@ -52,6 +62,7 @@ pub struct StickyInput {
     pub body: String,
     pub content_type: String,
     pub items: Vec<StickyItem>,
+    pub timeline: Vec<TimelineEntry>,
     pub tags: Vec<String>,
     pub theme: String,
     pub pinned: bool,

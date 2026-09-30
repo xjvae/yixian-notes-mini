@@ -40,6 +40,16 @@ pub fn run() {
                         }
                         Err(e) => eprintln!("迁移失败，SQLite 侧不可用：{e}"),
                     }
+                    // 回收站到期清算（30 天）。清不动只是晚一轮，数据仍在库里，不许带崩启动
+                    match db::query::trash::purge_expired(
+                        &database,
+                        db::query::trash::TRASH_RETENTION_DAYS,
+                        db::query::sticky::now_ms(),
+                    ) {
+                        Ok(0) => {}
+                        Ok(n) => eprintln!("回收站到期清算 {n} 条"),
+                        Err(e) => eprintln!("回收站清算没跑成：{e}"),
+                    }
                     app.manage(database);
                 }
                 Err(e) => eprintln!("主库打不开，数据命令将全部拒绝：{e}"),
@@ -54,8 +64,11 @@ pub fn run() {
             commands::entity::sticky_list,
             commands::entity::sticky_upsert,
             commands::entity::sticky_delete,
+            commands::entity::trash_restore,
             commands::window::create_floating_sticky,
             commands::window::close_floating_sticky,
+            commands::window::open_trash_window,
+            commands::window::close_trash_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

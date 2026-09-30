@@ -13,6 +13,9 @@ pub const FLOAT_PREFIX: &str = "sticky-";
 const MAIN_ENTRY: &str = "index.html";
 const DEFAULT_SIZE: (f64, f64) = (320.0, 300.0);
 const MIN_SIZE: (f64, f64) = (220.0, 200.0);
+/// 收起成标题栏形态的固定高度与最大宽度（前端收起按钮走同一套常量口径）
+const BAR_HEIGHT: f64 = 62.0;
+const BAR_MAX_WIDTH: f64 = 360.0;
 
 pub fn label_for(id: &str) -> String {
     format!("{FLOAT_PREFIX}{id}")
@@ -40,10 +43,21 @@ pub async fn open_sticky(app: &AppHandle, db: &Db, id: &str) -> AppResult<()> {
         (Some(x), Some(y)) => (x as f64, y as f64),
         _ => cascade_position(app),
     };
-    let size = (
-        row.width.map(|v| v as f64).unwrap_or(DEFAULT_SIZE.0),
-        row.height.map(|v| v as f64).unwrap_or(DEFAULT_SIZE.1),
-    );
+    // 收起态的行记的仍是展开尺寸：开机恢复时按收起形态开窗
+    let size = if row.collapsed {
+        (
+            row.width
+                .map(|v| v as f64)
+                .unwrap_or(DEFAULT_SIZE.0)
+                .min(BAR_MAX_WIDTH),
+            BAR_HEIGHT,
+        )
+    } else {
+        (
+            row.width.map(|v| v as f64).unwrap_or(DEFAULT_SIZE.0),
+            row.height.map(|v| v as f64).unwrap_or(DEFAULT_SIZE.1),
+        )
+    };
     let spec = WindowSpec {
         label,
         url: MAIN_ENTRY.into(),
@@ -95,6 +109,7 @@ fn default_input(id: &str) -> StickyInput {
         body: String::new(),
         content_type: "text".into(),
         items: Vec::new(),
+        timeline: Vec::new(),
         tags: Vec::new(),
         theme: "yellow".into(),
         pinned: true,

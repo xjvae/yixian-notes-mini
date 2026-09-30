@@ -5,8 +5,9 @@ use tauri::{Emitter, Manager, State, WebviewWindow};
 
 use crate::db::models::{StickyInput, StickyRow};
 use crate::db::pool::Db;
-use crate::db::query::sticky;
+use crate::db::query::{sticky, trash};
 use crate::support::error::AppResult;
+use crate::windows::float;
 
 use super::run_db;
 
@@ -39,6 +40,23 @@ pub async fn sticky_delete(
     let changed = run_db(db, move |db| sticky::delete(db, &id, hard)).await?;
     emit_changed(&win, "sticky");
     Ok(changed)
+}
+
+/// 回收站「恢复」：清删除时钟 + 回桌面 + 当场拉起浮窗。
+#[tauri::command]
+pub async fn trash_restore(
+    win: WebviewWindow,
+    db: State<'_, Db>,
+    id: String,
+) -> AppResult<bool> {
+    let db = db.inner().clone();
+    let id_for_restore = id.clone();
+    let restored = run_db(db.clone(), move |db| trash::restore(db, &id_for_restore)).await?;
+    if restored {
+        emit_changed(&win, "sticky");
+        float::open_sticky(win.app_handle(), &db, &id).await?;
+    }
+    Ok(restored)
 }
 
 fn emit_changed(win: &WebviewWindow, kind: &str) {

@@ -6,10 +6,13 @@ use rusqlite::Connection;
 use super::pool::Db;
 use crate::support::error::{AppError, AppResult};
 
-pub const TARGET_VERSION: i64 = 1;
+pub const TARGET_VERSION: i64 = 2;
 
 /// (目标版本, 整段 DDL)。执行顺序即数组顺序。
-const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("../../migrations/0001_init.sql"))];
+const MIGRATIONS: &[(i64, &str)] = &[
+    (1, include_str!("../../migrations/0001_init.sql")),
+    (2, include_str!("../../migrations/0002_timeline.sql")),
+];
 
 #[derive(Debug)]
 pub struct MigrationReport {
