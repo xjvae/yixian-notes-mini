@@ -26,6 +26,9 @@ export interface WindowChromeProps {
   /** 仅收起态出现 */
   onExpand?: () => void;
   onClose: () => void;
+  /** 整窗点击（贴边细丝的"点一下滑出"）。给了就必须给 bodyClickLabel */
+  onBodyClick?: () => void;
+  bodyClickLabel?: string;
   children: ReactNode;
 }
 
@@ -60,16 +63,18 @@ export function WindowChrome({
   onTogglePin,
   onExpand,
   onClose,
+  onBodyClick,
+  bodyClickLabel,
   children,
 }: WindowChromeProps) {
   return (
     <div
-      className="flex h-screen w-screen select-none flex-col overflow-hidden rounded-lg border border-black/10 shadow-[0_10px_30px_rgba(0,0,0,0.18)]"
+      className="relative flex h-screen w-screen select-none flex-col overflow-hidden rounded-lg border border-black/10 shadow-[0_10px_30px_rgba(0,0,0,0.18)]"
       style={{ backgroundColor: background }}
     >
       <div
         data-tauri-drag-region
-        className="flex h-9 shrink-0 items-center gap-1.5 px-2"
+        className="z-10 flex h-9 shrink-0 items-center gap-1.5 px-2"
         style={{ borderBottom: `1px solid ${accent}22` }}
       >
         {leading}
@@ -98,6 +103,14 @@ export function WindowChrome({
         {iconButton("关闭", onClose, accent, <X size={14} aria-hidden />)}
       </div>
       {!collapsed && <div className="min-h-0 flex-1">{children}</div>}
+      {onBodyClick && (
+        <button
+          type="button"
+          aria-label={bodyClickLabel ?? ""}
+          onClick={onBodyClick}
+          className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+        />
+      )}
     </div>
   );
 }

@@ -50,6 +50,8 @@ export function createDefaultSticky(id: string, now: number): StickyNote {
     repeat: "none",
     deleted: false,
     deletedAt: null,
+    docked: false,
+    dockEdge: null,
     createdAt: now,
     updatedAt: now,
   };

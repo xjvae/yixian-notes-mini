@@ -9,6 +9,15 @@ export type StickyContentType = "text" | "todo" | "reminder" | "timeline";
 
 export type ReminderRepeat = "none" | "daily" | "weekly";
 
+/** 贴边侧。细丝贴的是工作区边缘（不压任务栏），不是屏幕边缘 */
+export type DockEdge = "left" | "right" | "top" | "bottom";
+
+export const DOCK_EDGES: readonly DockEdge[] = ["left", "right", "top", "bottom"];
+
+export function isDockEdge(value: unknown): value is DockEdge {
+  return value === "left" || value === "right" || value === "top" || value === "bottom";
+}
+
 /** 清单条目。id 稳定：React key / 删中间行时焦点不跳行 */
 export interface StickyItem {
   id: string;
@@ -56,6 +65,9 @@ export interface StickyNote {
   /** 软删除标记；真删除在回收站"彻底删除" */
   deleted: boolean;
   deletedAt: number | null;
+  /** 贴边吸附态：true 时窗体以 20px 细丝贴在 dockEdge 一侧 */
+  docked: boolean;
+  dockEdge: DockEdge | null;
   /** 由 Rust 写入侧权威生成（epoch ms），前端只读 */
   createdAt: number;
   updatedAt: number;
@@ -73,6 +85,23 @@ export interface Bootstrap {
 export interface DbChangedEvent {
   writer: string;
   kind: "sticky" | "group";
+}
+
+/** 检索命中。正文供摘要展示，私密便签不进检索（见 Rust 侧 search.rs） */
+export interface SearchHit {
+  id: string;
+  title: string;
+  body: string;
+  contentType: StickyContentType;
+  theme: string;
+}
+
+/** 当前显示器工作区（物理像素；前端按自身缩放系数转逻辑像素） */
+export interface WorkArea {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 /** 事件名常量：拼错是编译错误 */

@@ -49,6 +49,8 @@ pub struct StickyRow {
     pub repeat: String,
     pub deleted: bool,
     pub deleted_at: Option<i64>,
+    pub docked: bool,
+    pub dock_edge: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -79,4 +81,6 @@ pub struct StickyInput {
     pub done_at: Option<i64>,
     pub repeat: String,
     pub deleted: bool,
+    pub docked: bool,
+    pub dock_edge: Option<String>,
 }

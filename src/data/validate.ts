@@ -2,6 +2,7 @@
 // 修不了的行整体丢弃并留一条 warn。原则：绝不让一条坏数据换来一个白窗口。
 
 import type { StickyItem, StickyNote, TimelineEntry } from "@/platform/contracts";
+import { isDockEdge } from "@/platform/contracts";
 import { isStickyContentType } from "@/data/entities";
 import { themeOf, THEME_KEYS } from "@/data/theme";
 import { logger } from "@/platform/logger";
@@ -89,6 +90,8 @@ export function normalizeSticky(row: StickyNote): StickyNote | null {
     repeat: row.repeat === "daily" || row.repeat === "weekly" ? row.repeat : "none",
     deleted: asBool(row.deleted, false),
     deletedAt: asIntOrNull(row.deletedAt),
+    docked: asBool(row.docked, false),
+    dockEdge: isDockEdge(row.dockEdge) ? row.dockEdge : null,
     createdAt: typeof row.createdAt === "number" ? row.createdAt : 0,
     updatedAt: typeof row.updatedAt === "number" ? row.updatedAt : 0,
   };

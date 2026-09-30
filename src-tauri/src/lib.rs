@@ -28,6 +28,18 @@ pub fn run() {
             // 二次启动：骨架期无事可做；星环落地后在这里唤起它
         }))
         .manage(windows::factory::CreatingRegistry::default())
+        .manage(windows::dock::DockLayout::default())
+        .on_window_event(|window, event| {
+            // 销毁清账：贴边注册表不清，槽位号会越涨越大
+            if let tauri::WindowEvent::Destroyed = event {
+                let label = window.label();
+                if let Some(id) = label.strip_prefix(windows::float::FLOAT_PREFIX) {
+                    window
+                        .state::<windows::dock::DockLayout>()
+                        .remove(id);
+                }
+            }
+        })
         .setup(|app| {
             let handle = app.handle().clone();
             let dir = handle.path().app_data_dir()?;
@@ -50,6 +62,31 @@ pub fn run() {
                         Ok(n) => eprintln!("回收站到期清算 {n} 条"),
                         Err(e) => eprintln!("回收站清算没跑成：{e}"),
                     }
+                    // 开机恢复桌面便签：floating=1 且未删的逐张拉回。
+                    // 「开机恢复」设置项默认开，显式写 "0" 才算关（三态口径）。
+                    let restore_on_boot =
+                        match db::query::settings::get(&database, "restore_on_boot") {
+                            Ok(value) => value.as_deref() != Some("0"),
+                            Err(_) => true,
+                        };
+                    if restore_on_boot {
+                        match db::query::sticky::list(&database, false) {
+                            Ok(rows) => {
+                                for row in rows.into_iter().filter(|row| row.floating) {
+                                    let handle = handle.clone();
+                                    let database = database.clone();
+                                    tauri::async_runtime::spawn(async move {
+                                        if let Err(e) =
+                                            windows::float::open_sticky(&handle, &database, &row.id).await
+                                        {
+                                            eprintln!("开机恢复便签 {} 失败：{e}", row.id);
+                                        }
+                                    });
+                                }
+                            }
+                            Err(e) => eprintln!("开机恢复读库失败：{e}"),
+                        }
+                    }
                     app.manage(database);
                 }
                 Err(e) => eprintln!("主库打不开，数据命令将全部拒绝：{e}"),
@@ -61,14 +98,22 @@ pub fn run() {
             // generate_handler 依赖命令宏生成的隐藏项与函数同模块：
             // 这里必须写完整模块路径，不能经由 mod.rs 转发
             commands::db::get_bootstrap,
+            commands::db::settings_set,
             commands::entity::sticky_list,
             commands::entity::sticky_upsert,
             commands::entity::sticky_delete,
             commands::entity::trash_restore,
+            commands::search::search_query,
             commands::window::create_floating_sticky,
+            commands::window::open_floating_sticky,
             commands::window::close_floating_sticky,
             commands::window::open_trash_window,
             commands::window::close_trash_window,
+            commands::window::open_search_window,
+            commands::window::close_search_window,
+            commands::window::float_dock_register,
+            commands::window::float_dock_unregister,
+            commands::window::monitor_work_area,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

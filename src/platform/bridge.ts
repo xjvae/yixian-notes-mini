@@ -59,3 +59,16 @@ export async function resizeKeepingPosition(
   await win.setSize(new LogicalSize(width, height));
   await win.setPosition(position);
 }
+
+/** 一次把窗口摆到指定逻辑矩形（贴边动画/细丝归位的逐帧写入口） */
+export async function setWindowFrame(
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+): Promise<void> {
+  const win = getCurrentWindow();
+  const { LogicalSize, LogicalPosition } = await import("@tauri-apps/api/dpi");
+  await win.setSize(new LogicalSize(width, height));
+  await win.setPosition(new LogicalPosition(x, y));
+}

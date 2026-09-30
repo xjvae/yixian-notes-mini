@@ -48,6 +48,9 @@ mod tests {
         db.lock()
             .execute_batch(include_str!("../../../migrations/0002_timeline.sql"))
             .expect("补列");
+        db.lock()
+            .execute_batch(include_str!("../../../migrations/0003_dock.sql"))
+            .expect("补贴边列");
         db
     }
 
@@ -74,6 +77,8 @@ mod tests {
             done_at: None,
             repeat: "none".into(),
             deleted: false,
+            docked: false,
+            dock_edge: None,
         }
     }
 

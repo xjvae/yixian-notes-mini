@@ -15,7 +15,7 @@ pub fn now_ms() -> i64 {
 
 const COLS: &str = "id, title, body, content_type, items_json, timeline_json, tags_json, theme, \
                     pinned, floating, collapsed, private, group_id, x, y, width, height, due_at, \
-                    done_at, repeat, deleted, deleted_at, created_at, updated_at";
+                    done_at, repeat, deleted, deleted_at, created_at, updated_at, docked, dock_edge";
 
 fn row_to_sticky(row: &rusqlite::Row) -> rusqlite::Result<StickyRow> {
     let items_json: String = row.get("items_json")?;
@@ -44,6 +44,8 @@ fn row_to_sticky(row: &rusqlite::Row) -> rusqlite::Result<StickyRow> {
         repeat: row.get("repeat")?,
         deleted: row.get::<_, i64>("deleted")? != 0,
         deleted_at: row.get("deleted_at")?,
+        docked: row.get::<_, i64>("docked")? != 0,
+        dock_edge: row.get("dock_edge")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
     })
@@ -91,12 +93,12 @@ pub fn upsert(db: &Db, input: StickyInput) -> AppResult<StickyRow> {
                 id, title, body, content_type, items_json, timeline_json, tags_json, theme,
                 pinned, floating, collapsed, private, group_id,
                 x, y, width, height, due_at, done_at, repeat,
-                deleted, deleted_at, created_at, updated_at
+                deleted, deleted_at, created_at, updated_at, docked, dock_edge
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
                 ?9, ?10, ?11, ?12, ?13,
                 ?14, ?15, ?16, ?17, ?18, ?19, ?20,
-                ?21, ?22, ?23, ?24
+                ?21, ?22, ?23, ?24, ?25, ?26
             )
             ON CONFLICT(id) DO UPDATE SET
                 title = ?2, body = ?3, content_type = ?4, items_json = ?5, timeline_json = ?6,
@@ -108,7 +110,8 @@ pub fn upsert(db: &Db, input: StickyInput) -> AppResult<StickyRow> {
                     WHEN ?21 = 0 THEN NULL
                     ELSE deleted_at
                 END,
-                updated_at = ?24",
+                updated_at = ?24,
+                docked = ?25, dock_edge = ?26",
             params![
                 input.id,
                 input.title,
@@ -134,6 +137,8 @@ pub fn upsert(db: &Db, input: StickyInput) -> AppResult<StickyRow> {
                 deleted_at_on_insert,
                 now,
                 now,
+                input.docked as i64,
+                input.dock_edge,
             ],
         )?;
     }
@@ -172,6 +177,9 @@ mod tests {
         db.lock()
             .execute_batch(include_str!("../../../migrations/0002_timeline.sql"))
             .expect("补列");
+        db.lock()
+            .execute_batch(include_str!("../../../migrations/0003_dock.sql"))
+            .expect("补贴边列");
         db
     }
 
@@ -206,6 +214,8 @@ mod tests {
             done_at: None,
             repeat: "none".into(),
             deleted: false,
+            docked: false,
+            dock_edge: None,
         }
     }
 

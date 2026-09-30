@@ -125,5 +125,7 @@ fn default_input(id: &str) -> StickyInput {
         done_at: None,
         repeat: "none".into(),
         deleted: false,
+        docked: false,
+        dock_edge: None,
     }
 }

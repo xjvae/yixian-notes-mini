@@ -14,6 +14,7 @@ import {
   ChevronDown,
   History,
   ListChecks,
+  PanelLeftClose,
   TextIcon,
   Trash2,
 } from "lucide-react";
@@ -28,6 +29,13 @@ import { useNow } from "@/features/sticky/use-now";
 import { TodoBody } from "@/features/sticky/todo-body";
 import { TimelineBody } from "@/features/sticky/timeline-body";
 import { ReminderFields } from "@/features/sticky/reminder-fields";
+import {
+  BAR_HEIGHT,
+  BAR_MAX_WIDTH,
+  STICKY_DEFAULT_SIZE,
+  STICKY_MIN_SIZE,
+} from "@/features/sticky/window-statics";
+import { useDockSnap } from "@/window/use-dock-snap";
 import { useNote, useWriteFailures } from "@/store/hooks";
 import { flushNow, removeNote, updateNote } from "@/store/notes-store";
 import { closeFloatingSticky } from "@/platform/commands";
@@ -38,10 +46,6 @@ import { useWindowGeometry } from "@/window/geometry";
 import type { StickyContentType } from "@/platform/contracts";
 
 const SCOPE = "sticky";
-export const STICKY_MIN_SIZE = { width: 220, height: 200 };
-const BAR_HEIGHT = 62;
-const BAR_MAX_WIDTH = 360;
-const DEFAULT_SIZE = { width: 320, height: 300 };
 /** 收起栏上显示的标题上限：再长就截断，条高度是死的 */
 const BAR_TITLE_MAX = 18;
 
@@ -65,7 +69,8 @@ export function StickyWindow() {
     minimizedRef.current = minimized;
   }, [minimized]);
 
-  // 几何合流持久化：moved/resized 静默 180ms 才写；收起期间抑制
+  // 几何合流持久化：moved/resized 静默 180ms 才写；收起与贴边期间抑制
+  // （贴边的细丝/滑出位都不是用户的展开几何，记下它们就是毁掉恢复尺寸）
   const commitGeometry = useCallback(
     (
       patch: Partial<{
@@ -80,7 +85,15 @@ export function StickyWindow() {
     },
     [id],
   );
-  useWindowGeometry(commitGeometry, () => minimizedRef.current, STICKY_MIN_SIZE);
+
+  /** 贴边吸附：判定在 dock-model（纯函数），这里只接交互。无条件调用（Hooks 纪律） */
+  const dock = useDockSnap({ id: id ?? "", note, minimized });
+
+  useWindowGeometry(
+    commitGeometry,
+    () => minimizedRef.current || dock.suppressGeometry,
+    STICKY_MIN_SIZE,
+  );
 
   const flush = useCallback(() => {
     void flushNow();
@@ -114,19 +127,26 @@ export function StickyWindow() {
 
   const handleMinimize = useCallback(() => {
     if (id === null || note === null || minimized) return;
+    if (dock.docked) return; // 贴边态本身就是收纳形态，不叠收起
     setMinimized(true);
     minimizedRef.current = true; // 程序性改尺寸必须立刻被几何合流看见
-    const width = Math.min(note.width ?? DEFAULT_SIZE.width, BAR_MAX_WIDTH);
+    const width = Math.min(note.width ?? STICKY_DEFAULT_SIZE.width, BAR_MAX_WIDTH);
     void resizeKeepingPosition(width, BAR_HEIGHT).catch((error: unknown) =>
       logger.caught(SCOPE, "收起失败", error),
     );
     updateNote(id, { collapsed: true });
-  }, [id, note, minimized]);
+  }, [id, note, minimized, dock.docked]);
 
   const handleExpand = useCallback(() => {
     if (id === null || note === null || !minimized) return;
-    const width = Math.max(STICKY_MIN_SIZE.width, note.width ?? DEFAULT_SIZE.width);
-    const height = Math.max(STICKY_MIN_SIZE.height, note.height ?? DEFAULT_SIZE.height);
+    const width = Math.max(
+      STICKY_MIN_SIZE.width,
+      note.width ?? STICKY_DEFAULT_SIZE.width,
+    );
+    const height = Math.max(
+      STICKY_MIN_SIZE.height,
+      note.height ?? STICKY_DEFAULT_SIZE.height,
+    );
     void resizeKeepingPosition(width, height)
       .then(() => {
         setMinimized(false);
@@ -209,6 +229,8 @@ export function StickyWindow() {
       onTogglePin={handleTogglePin}
       onExpand={handleExpand}
       onClose={handleClose}
+      onBodyClick={dock.docked && !dock.revealed ? () => dock.toggleReveal() : undefined}
+      bodyClickLabel="滑出便签"
     >
       <div className="flex h-full flex-col gap-1.5 p-3">
         {/* 类型切换 + 六色 */}
@@ -372,16 +394,30 @@ export function StickyWindow() {
               {note.body.length}/{BODY_MAX}
             </span>
           )}
-          <button
-            type="button"
-            aria-label="收起为标题栏"
-            title="收起"
-            onClick={handleMinimize}
-            className="rounded p-1 transition-colors hover:bg-black/10"
-            style={{ color: theme.accent }}
-          >
-            <ChevronDown size={14} aria-hidden />
-          </button>
+          {dock.docked && dock.revealed && (
+            <button
+              type="button"
+              aria-label="收回贴边"
+              title="收回贴边（拖离边缘可解除贴边）"
+              onClick={() => dock.toggleReveal()}
+              className="rounded p-1 transition-colors hover:bg-black/10"
+              style={{ color: theme.accent }}
+            >
+              <PanelLeftClose size={14} aria-hidden />
+            </button>
+          )}
+          {!dock.docked && (
+            <button
+              type="button"
+              aria-label="收起为标题栏"
+              title="收起"
+              onClick={handleMinimize}
+              className="rounded p-1 transition-colors hover:bg-black/10"
+              style={{ color: theme.accent }}
+            >
+              <ChevronDown size={14} aria-hidden />
+            </button>
+          )}
           <button
             type="button"
             aria-label="删除便签"

@@ -21,6 +21,12 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 # bundled SQLite：与 TS 检索（FTS5 中文二字组，ROADMAP M2）共用一个编译单元
 rusqlite = { version = "0.40.2", features = ["bundled"] }
+# Win32：monitor_work_area 取工作区（贴边细丝不压任务栏）
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 # 随 ROADMAP 加入：argon2/aes-gcm/base64/zeroize（私密层 M3）、
 # windows crate（WH_MOUSE_LL 钩子 M4）、tauri-plugin-global-shortcut（M2）
