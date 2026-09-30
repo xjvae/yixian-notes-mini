@@ -4,6 +4,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::support::error::{AppError, AppResult};
 use crate::windows::factory::{build_window, WindowSpec};
+use crate::windows::frames;
 
 pub const SEARCH_LABEL: &str = "search";
 const SEARCH_ENTRY: &str = "search.html";
@@ -23,7 +24,9 @@ pub async fn open(app: &AppHandle) -> AppResult<()> {
         focused: true,
         init_script: None,
     };
-    build_window(app, spec).await.map(|_| ())
+    build_window(app, spec).await.map(|window| {
+        frames::apply_saved(&window);
+    })
 }
 
 /// 关闭 = 隐藏（与回收站同口径：窗内无状态要销毁，留着记住摆位）

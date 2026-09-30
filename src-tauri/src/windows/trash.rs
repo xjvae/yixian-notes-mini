@@ -4,6 +4,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::support::error::{AppError, AppResult};
 use crate::windows::factory::{build_window, WindowSpec};
+use crate::windows::frames;
 
 pub const TRASH_LABEL: &str = "trash";
 const TRASH_ENTRY: &str = "trash.html";
@@ -23,7 +24,9 @@ pub async fn open(app: &AppHandle) -> AppResult<()> {
         focused: true,
         init_script: None,
     };
-    build_window(app, spec).await.map(|_| ())
+    build_window(app, spec).await.map(|window| {
+        frames::apply_saved(&window);
+    })
 }
 
 /// 关闭 = 隐藏：窗里没有要销毁的状态，留着窗还能记住下次的位置（window_state 随 M4）

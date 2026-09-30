@@ -1,6 +1,7 @@
 pub mod dock;
 pub mod factory;
 pub mod float;
+pub mod frames;
 pub mod search;
 pub mod settings;
 pub mod trash;

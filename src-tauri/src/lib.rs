@@ -21,6 +21,7 @@ mod commands;
 mod data;
 mod db;
 mod hotkeys;
+mod import;
 mod support;
 mod tray;
 mod windows;
@@ -38,14 +39,22 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(windows::factory::CreatingRegistry::default())
         .manage(windows::dock::DockLayout::default())
+        .manage(windows::frames::PanelFrames::default())
         .manage(hotkeys::HotkeyRegistry::default())
         .on_window_event(|window, event| {
-            // 销毁清账：贴边注册表不清，槽位号会越涨越大
-            if let tauri::WindowEvent::Destroyed = event {
-                let label = window.label();
-                if let Some(id) = label.strip_prefix(windows::float::FLOAT_PREFIX) {
-                    window.state::<windows::dock::DockLayout>().remove(id);
+            let label = window.label();
+            match event {
+                // 销毁清账：贴边注册表不清，槽位号会越涨越大
+                tauri::WindowEvent::Destroyed => {
+                    if let Some(id) = label.strip_prefix(windows::float::FLOAT_PREFIX) {
+                        window.state::<windows::dock::DockLayout>().remove(id);
+                    }
                 }
+                // 面板窗几何记忆（合流后落 window_state）
+                tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
+                    windows::frames::track(window.app_handle(), label);
+                }
+                _ => {}
             }
         })
         .setup(|app| {
@@ -65,6 +74,9 @@ pub fn run() {
                         }
                         Err(e) => support::log::error("db", &format!("迁移失败，SQLite 侧不可用：{e}")),
                     }
+                    // 旧版一次性导入（幂等，标记同事务；只读旧库，旧应用文件不动）。
+                    // 排在清算之前：旧库带进来的过期回收站条目当轮就该清掉。
+                    import::run(&dir, &database);
                     // 回收站到期清算（30 天）。清不动只是晚一轮，数据仍在库里，不许带崩启动
                     match db::query::trash::purge_expired(
                         &database,
