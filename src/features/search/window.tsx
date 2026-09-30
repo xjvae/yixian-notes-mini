@@ -10,8 +10,8 @@ import { displayTitle } from "@/data/note-types";
 import { closeSearchWindow, openFloatingSticky, searchQuery } from "@/platform/commands";
 import type { SearchHit } from "@/platform/contracts";
 
-const PANEL_BACKGROUND = "#F7F6F3";
-const PANEL_ACCENT = "#5B6470";
+const PANEL_BG = "var(--panel-bg)";
+const PANEL_ACCENT = "var(--panel-ink)";
 const DEBOUNCE_MS = 150;
 
 function snippet(hit: SearchHit): string {
@@ -72,7 +72,7 @@ export function SearchWindow() {
 
   return (
     <WindowChrome
-      background={PANEL_BACKGROUND}
+      background={PANEL_BG}
       accent={PANEL_ACCENT}
       pinned={false}
       onTogglePin={() => {}}
@@ -81,15 +81,15 @@ export function SearchWindow() {
       }}
     >
       <div className="flex h-full flex-col gap-2 p-4">
-        <div className="flex shrink-0 items-center gap-2 rounded-lg border border-black/10 bg-white px-3 py-2">
-          <Search size={14} className="shrink-0 text-neutral-400" aria-hidden />
+        <div className="flex shrink-0 items-center gap-2 rounded-lg border border-[var(--panel-border)] bg-[var(--panel-card)] px-3 py-2">
+          <Search size={14} className="shrink-0 text-[var(--panel-muted)]" aria-hidden />
           <input
             ref={inputRef}
             aria-label="搜索便签"
             placeholder="搜标题、正文、清单、标签…"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            className="min-w-0 flex-1 bg-transparent text-sm text-neutral-800 placeholder:text-neutral-400"
+            className="min-w-0 flex-1 bg-transparent text-sm text-[var(--panel-ink)] placeholder:text-[var(--panel-muted)]"
           />
         </div>
         {error !== null && (
@@ -99,7 +99,7 @@ export function SearchWindow() {
         )}
         <div className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto">
           {visibleHits === null || visibleHits.length === 0 ? (
-            <div className="mt-8 text-center text-xs text-neutral-400">
+            <div className="mt-8 text-center text-xs text-[var(--panel-muted)]">
               {query.trim() === ""
                 ? "输入两个字就能搜到正文中间的词；私密便签不参与搜索。"
                 : "没有命中的便签。"}
@@ -112,16 +112,16 @@ export function SearchWindow() {
                   key={hit.id}
                   type="button"
                   onClick={() => open(hit.id)}
-                  className="flex flex-col items-start gap-0.5 rounded-lg border border-black/5 bg-white px-3 py-2 text-left transition-colors hover:bg-black/[0.03]"
+                  className="flex flex-col items-start gap-0.5 rounded-lg border border-[var(--panel-border)] bg-[var(--panel-card)] px-3 py-2 text-left transition-colors hover:bg-[var(--panel-hover)]"
                   style={{ borderLeft: `3px solid ${ink.accent}` }}
                 >
-                  <span className="max-w-full truncate text-[13px] font-medium text-neutral-800">
+                  <span className="max-w-full truncate text-[13px] font-medium text-[var(--panel-ink)]">
                     {displayTitle(hit.title, false)}
                   </span>
-                  <span className="max-w-full truncate text-[11px] text-neutral-500">
+                  <span className="max-w-full truncate text-[11px] text-[var(--panel-muted)]">
                     {snippet(hit)}
                   </span>
-                  <span className="text-[10px] text-neutral-400">
+                  <span className="text-[10px] text-[var(--panel-muted)]">
                     {noteTypeLabel(hit.contentType)}
                   </span>
                 </button>

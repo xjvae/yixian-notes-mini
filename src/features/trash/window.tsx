@@ -17,8 +17,8 @@ import { listen } from "@/platform/bridge";
 import { DB_CHANGED } from "@/platform/contracts";
 import type { DbChangedEvent, StickyNote } from "@/platform/contracts";
 
-const PANEL_BACKGROUND = "#F7F6F3";
-const PANEL_ACCENT = "#5B6470";
+const PANEL_BG = "var(--panel-bg)";
+const PANEL_ACCENT = "var(--panel-ink)";
 const CONFIRM_RESET_MS = 3000;
 
 function formatDateTime(ms: number): string {
@@ -91,7 +91,7 @@ export function TrashWindow() {
 
   return (
     <WindowChrome
-      background={PANEL_BACKGROUND}
+      background={PANEL_BG}
       accent={PANEL_ACCENT}
       pinned={false}
       onTogglePin={() => {}}
@@ -101,8 +101,8 @@ export function TrashWindow() {
     >
       <div className="flex h-full flex-col gap-2 p-4">
         <div className="flex shrink-0 items-baseline gap-2">
-          <h1 className="text-sm font-semibold text-neutral-800">回收站</h1>
-          <span className="text-xs text-neutral-400">
+          <h1 className="text-sm font-semibold text-[var(--panel-ink)]">回收站</h1>
+          <span className="text-xs text-[var(--panel-muted)]">
             {rows === null ? "载入中…" : `${deletedCount} 张，30 天后自动清理`}
           </span>
         </div>
@@ -113,7 +113,7 @@ export function TrashWindow() {
         )}
         <div className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto">
           {rows !== null && deletedCount === 0 && (
-            <div className="mt-8 text-center text-xs text-neutral-400">
+            <div className="mt-8 text-center text-xs text-[var(--panel-muted)]">
               回收站是空的。删掉的便签会在这里躺 30 天。
             </div>
           )}
@@ -123,14 +123,14 @@ export function TrashWindow() {
             return (
               <div
                 key={row.id}
-                className="flex items-center gap-2 rounded-lg border border-black/5 bg-white px-3 py-2"
+                className="flex items-center gap-2 rounded-lg border border-[var(--panel-border)] bg-[var(--panel-card)] px-3 py-2"
                 style={{ borderLeft: `3px solid ${ink.accent}` }}
               >
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-[13px] font-medium text-neutral-800">
+                  <div className="truncate text-[13px] font-medium text-[var(--panel-ink)]">
                     {displayTitle(row.title, row.private)}
                   </div>
-                  <div className="text-[11px] text-neutral-400">
+                  <div className="text-[11px] text-[var(--panel-muted)]">
                     {noteTypeLabel(row.contentType)} · 删于{" "}
                     {formatDateTime(row.deletedAt ?? 0)}
                   </div>
@@ -139,7 +139,7 @@ export function TrashWindow() {
                   type="button"
                   aria-label={`恢复「${displayTitle(row.title, row.private)}」`}
                   onClick={() => handleRestore(row.id)}
-                  className="flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs text-neutral-600 transition-colors hover:bg-black/5"
+                  className="flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs text-[var(--panel-ink)] transition-colors hover:bg-[var(--panel-hover)]"
                 >
                   <RotateCcw size={12} aria-hidden />
                   恢复

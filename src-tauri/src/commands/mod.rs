@@ -5,6 +5,7 @@
 // 子模块必须 pub：generate_handler! 要在同模块里找命令宏生成的隐藏项
 pub mod db;
 pub mod entity;
+pub mod hotkey;
 pub mod search;
 pub mod window;
 

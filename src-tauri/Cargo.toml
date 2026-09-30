@@ -17,6 +17,8 @@ tauri-build = { version = "2.6", features = [] }
 tauri = { version = "2.11", features = ["tray-icon"] }
 # 单实例：将来 WH_MOUSE_LL 钩子落地后，第二个进程绝不能再装一套钩子（互抢右键 = 两边都失灵）
 tauri-plugin-single-instance = "2.4"
+# 全局快捷键（Alt+1..4 直达；Alt+Space 唤星环随 M4）。逐条注册、逐条容忍失败
+tauri-plugin-global-shortcut = "2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 # bundled SQLite：与 TS 检索（FTS5 中文二字组，ROADMAP M2）共用一个编译单元

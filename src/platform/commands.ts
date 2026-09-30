@@ -75,9 +75,29 @@ export function closeSearchWindow(): Promise<void> {
   return invoke<void>("close_search_window");
 }
 
-/** 写设置项（"0" = 显式关） */
+/** 打开/聚焦设置窗 */
+export function openSettingsWindow(): Promise<void> {
+  return invoke<void>("open_settings_window");
+}
+
+/** 隐藏设置窗 */
+export function closeSettingsWindow(): Promise<void> {
+  return invoke<void>("close_settings_window");
+}
+
+/** 写设置项（"0" = 显式关）。写完广播 kind:"setting"，scheme 等监听方各自重读 */
 export function settingsSet(key: string, value: string): Promise<void> {
   return invoke<void>("settings_set", { key, value });
+}
+
+/** 读单个设置项 */
+export function getSetting(key: string): Promise<string | null> {
+  return invoke<string | null>("settings_get", { key });
+}
+
+/** 立即备份（VACUUM INTO 快照），返回备份文件完整路径 */
+export function dataBackup(): Promise<string> {
+  return invoke<string>("data_backup");
 }
 
 // —— 贴边 ——

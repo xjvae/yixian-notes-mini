@@ -21,8 +21,7 @@ pub const DB_FILE: &str = "mini.db";
 #[derive(Clone)]
 pub struct Db {
     inner: Arc<Mutex<Connection>>,
-    /// 数据目录（备份、导入等路径用）
-    #[allow(dead_code)] // 随 ROADMAP M4 的备份/旧库导入启用
+    /// 数据目录（备份、日志等路径用）
     dir: PathBuf,
 }
 
@@ -33,11 +32,16 @@ impl Db {
             .map_err(|e| AppError::new("DB_OPEN", format!("数据目录建不出来：{e}")))?;
         let conn = Connection::open(dir.join(DB_FILE))
             .map_err(|e| AppError::new("DB_OPEN", format!("打不开 {DB_FILE}：{e}")))?;
-        Ok(Self::from_connection(conn))
+        Ok(Self::from_connection_with_dir(conn, dir))
     }
 
-    /// 测试入口：由调用方给定连接（内存库）
+    /// 测试入口：由调用方给定连接（内存库）。仅测试目标编译，生产走 `open`
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn from_connection(conn: Connection) -> Self {
+        Self::from_connection_with_dir(conn, Path::new(""))
+    }
+
+    fn from_connection_with_dir(conn: Connection, dir: &Path) -> Self {
         // journal_mode 返回结果行，走 query_row 而不是 pragma_update
         let _ = conn.query_row("PRAGMA journal_mode = WAL", [], |row| {
             row.get::<_, String>(0)
@@ -46,8 +50,12 @@ impl Db {
         let _ = conn.busy_timeout(std::time::Duration::from_millis(2000));
         Self {
             inner: Arc::new(Mutex::new(conn)),
-            dir: PathBuf::new(),
+            dir: dir.to_path_buf(),
         }
+    }
+
+    pub fn dir(&self) -> &Path {
+        &self.dir
     }
 
     pub fn lock(&self) -> MutexGuard<'_, Connection> {

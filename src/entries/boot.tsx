@@ -7,6 +7,7 @@
 import { type ReactNode, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { ErrorBoundary } from "@/ui/error-boundary";
+import { initScheme } from "@/data/scheme";
 import { describeError } from "@/platform/errors";
 import { createTauriBackend } from "@/store/backend";
 import { hydrateStore, initStore } from "@/store/notes-store";
@@ -51,11 +52,16 @@ export async function boot({
   };
 
   if (!hydrate) {
-    mount();
+    void (async () => {
+      // 主题在挂载前应用：晚了就先闪一帧浅色
+      await initScheme();
+      mount();
+    })();
     return;
   }
   try {
     initStore(createTauriBackend());
+    await initScheme();
     await hydrateStore();
     mount();
   } catch (error) {

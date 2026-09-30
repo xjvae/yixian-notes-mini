@@ -81,10 +81,11 @@ export interface Bootstrap {
   stickies: StickyNote[];
 }
 
-/** 主库变更广播。writer = 写者窗口 label，本窗据此跳过回灌 */
+/** 主库变更广播。writer = 写者窗口 label，本窗据此跳过回灌；
+ * kind: "setting" = 设置项变了（scheme 等各自监听重读），payload 不带值 */
 export interface DbChangedEvent {
   writer: string;
-  kind: "sticky" | "group";
+  kind: "sticky" | "group" | "setting";
 }
 
 /** 检索命中。正文供摘要展示，私密便签不进检索（见 Rust 侧 search.rs） */

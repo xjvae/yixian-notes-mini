@@ -19,7 +19,8 @@ import {
   Trash2,
 } from "lucide-react";
 import { StickyLeading, WindowChrome } from "@/ui/window-chrome";
-import { themeOf, THEME_KEYS } from "@/data/theme";
+import { themeColors, themeOf, THEME_KEYS } from "@/data/theme";
+import { useScheme } from "@/data/scheme";
 import { displayTitle, noteTypeLabel, NOTE_TYPE_ORDER } from "@/data/note-types";
 import { conversionPatch } from "@/data/note-convert";
 import { describeDue } from "@/data/due";
@@ -61,6 +62,7 @@ export function StickyWindow() {
   const note = useNote(id);
   const failures = useWriteFailures();
   const now = useNow();
+  const { resolved } = useScheme();
 
   /** 收起形态只认本地开关：展开尺寸记在行里，收起栏的高度不该写回去 */
   const [minimized, setMinimized] = useState(() => note?.collapsed ?? false);
@@ -185,7 +187,8 @@ export function StickyWindow() {
     );
   }
 
-  const theme = themeOf(note.theme);
+  // 成对取色：深色档下纸色/强调色/墨色整体换，绝不允许"深纸浅墨"错配
+  const theme = themeColors(note.theme, resolved);
   const due = describeDue(note.dueAt, note.doneAt, now);
   const showDueBadge =
     note.contentType === "reminder" && due.state !== "none" && due.state !== "done";
