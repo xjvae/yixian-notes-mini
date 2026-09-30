@@ -1,0 +1,10 @@
+{
+  "identifier": "main",
+  "description": "全窗口基线能力：事件、置顶、拖动。随各窗落地按 label 收窄到最小集",
+  "windows": ["*"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-start-dragging"
+  ]
+}

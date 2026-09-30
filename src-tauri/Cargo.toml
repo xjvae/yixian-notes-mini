@@ -1,0 +1,44 @@
+[package]
+name = "yixian-notes-mini"
+version = "0.1.0"
+description = "一闲笔记 mini — 桌面便签"
+authors = ["梦一闲"]
+edition = "2024"
+rust-version = "1.97"
+
+[lib]
+name = "yixian_notes_mini_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6", features = [] }
+
+[dependencies]
+tauri = { version = "2.11", features = ["tray-icon"] }
+# 单实例：将来 WH_MOUSE_LL 钩子落地后，第二个进程绝不能再装一套钩子（互抢右键 = 两边都失灵）
+tauri-plugin-single-instance = "2.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# bundled SQLite：与 TS 检索（FTS5 中文二字组，ROADMAP M2）共用一个编译单元
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+
+# 随 ROADMAP 加入：argon2/aes-gcm/base64/zeroize（私密层 M3）、
+# windows crate（WH_MOUSE_LL 钩子 M4）、tauri-plugin-global-shortcut（M2）
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+# panic=abort 省体积，但没有 unwind 兜底：所有锁都必须按 poison 可恢复来写
+# （unwrap_or_else(|p| p.into_inner())），否则一次 panic 之后每次取锁都是 PoisonError。
+panic = "abort"
+incremental = false
+
+[profile.dev]
+opt-level = 1
+debug = true
+incremental = true

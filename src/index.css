@@ -1,0 +1,37 @@
+@import "tailwindcss";
+
+/*
+ * 全局基线。每扇窗一个 WebView：body 默认透明（浮窗是无边框透明窗），
+ * 桌面面板窗（设置/搜索/回收站）各自在根节点铺底色。
+ */
+:root {
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  font-family:
+    "Segoe UI",
+    "Microsoft YaHei",
+    system-ui,
+    -apple-system,
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  height: 100%;
+}
+
+/* 防止 textarea/input 拖出聚焦框时窗体被拖动 */
+input,
+textarea {
+  outline: none;
+}

@@ -1,0 +1,41 @@
+import path from "node:path";
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
+
+// 入口 = 窗口类型。骨架期只有 main（便签浮窗）；星环/搜索/回收站/设置/解锁
+// 随 ROADMAP 各期加入，加入时 Rust 侧 WindowSpec 的 url 必须与这里一一对应。
+export default defineConfig({
+  plugins: [react(), tailwindcss()],
+  base: "./",
+  resolve: {
+    alias: {
+      "@": path.resolve(__dirname, "src"),
+    },
+  },
+  build: {
+    outDir: "dist",
+    sourcemap: false,
+    reportCompressedSize: true,
+    // 浮窗不背 preload 链接；碎 chunk 靠并块兜底
+    modulePreload: false,
+    rollupOptions: {
+      input: {
+        main: path.resolve(__dirname, "index.html"),
+      },
+      output: {
+        entryFileNames: "assets/[name]-[hash].js",
+        chunkFileNames: "assets/js/[name]-[hash].js",
+        assetFileNames: "assets/[ext]/[name]-[hash].[ext]",
+        experimentalMinChunkSize: 4096,
+      },
+    },
+  },
+  server: {
+    port: 5174,
+    strictPort: true,
+    watch: {
+      ignored: ["**/src-tauri/target/**"],
+    },
+  },
+});
