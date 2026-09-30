@@ -4,6 +4,7 @@
 import { useSyncExternalStore } from "react";
 import type { StickyNote } from "@/platform/contracts";
 import {
+  getFailedSnapshot,
   getHydrationError,
   getNote,
   getNotesSnapshot,
@@ -26,4 +27,9 @@ export function useStoreStatus(): { ready: boolean; error: unknown } {
   const ready = useSyncExternalStore(subscribe, isStoreReady);
   const error = useSyncExternalStore(subscribe, getHydrationError);
   return { ready, error };
+}
+
+/** 落库失败的实体 id（引用稳定快照）。非空 = 反馈条要亮 */
+export function useWriteFailures(): readonly string[] {
+  return useSyncExternalStore(subscribe, getFailedSnapshot);
 }

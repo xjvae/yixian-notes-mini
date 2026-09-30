@@ -33,3 +33,18 @@ export function createFloatingSticky(): Promise<string> {
 export function closeFloatingSticky(id: string): Promise<void> {
   return invoke<void>("close_floating_sticky", { id });
 }
+
+/** 打开/聚焦回收站窗 */
+export function openTrashWindow(): Promise<void> {
+  return invoke<void>("open_trash_window");
+}
+
+/** 隐藏回收站窗（close = hide：窗内无状态要销毁） */
+export function closeTrashWindow(): Promise<void> {
+  return invoke<void>("close_trash_window");
+}
+
+/** 回收站「恢复」：清删除时钟 + 回桌面 + 当场拉起浮窗 */
+export function trashRestore(id: string): Promise<boolean> {
+  return invoke<boolean>("trash_restore", { id });
+}

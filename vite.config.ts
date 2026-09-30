@@ -3,7 +3,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
-// 入口 = 窗口类型。骨架期只有 main（便签浮窗）；星环/搜索/回收站/设置/解锁
+// 入口 = 窗口类型。main（便签浮窗）、trash（回收站）；星环/搜索/设置/解锁
 // 随 ROADMAP 各期加入，加入时 Rust 侧 WindowSpec 的 url 必须与这里一一对应。
 export default defineConfig({
   plugins: [react(), tailwindcss()],
@@ -22,6 +22,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: path.resolve(__dirname, "index.html"),
+        trash: path.resolve(__dirname, "trash.html"),
       },
       output: {
         entryFileNames: "assets/[name]-[hash].js",

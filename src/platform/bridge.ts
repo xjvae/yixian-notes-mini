@@ -43,3 +43,19 @@ export function currentWindow(): Window {
 export function currentWindowLabel(): string {
   return getCurrentWindow().label;
 }
+
+/**
+ * 改内容区尺寸并保持窗口左上角物理位置不动。
+ * Windows 的不可见阴影边框会让"改尺寸"顺带挪窗，所以量到的位置要在改完之后原样放回；
+ * 位置用物理像素（量出来什么样放回去就是什么样），尺寸用逻辑像素。
+ */
+export async function resizeKeepingPosition(
+  width: number,
+  height: number,
+): Promise<void> {
+  const win = getCurrentWindow();
+  const { LogicalSize } = await import("@tauri-apps/api/dpi");
+  const position = await win.outerPosition();
+  await win.setSize(new LogicalSize(width, height));
+  await win.setPosition(position);
+}

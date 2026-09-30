@@ -38,6 +38,7 @@ const failed = new Set<string>();
 
 let version = 0;
 let listCache: readonly StickyNote[] = [];
+let failedCache: readonly string[] = [];
 const listeners = new Set<Listener>();
 
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -48,6 +49,7 @@ let changeBound = false;
 function emit(): void {
   version += 1;
   listCache = [...notes.values()];
+  failedCache = [...failed];
   for (const listener of listeners) listener();
 }
 
@@ -80,6 +82,11 @@ export function getHydrationError(): unknown {
 
 export function getFailedIds(): readonly string[] {
   return [...failed];
+}
+
+/** 引用稳定的失败清单快照（反馈条订阅用） */
+export function getFailedSnapshot(): readonly string[] {
+  return failedCache;
 }
 
 // —— 装配与启动 ——
@@ -276,6 +283,7 @@ export function resetStoreForTests(): void {
   failed.clear();
   version = 0;
   listCache = [];
+  failedCache = [];
   listeners.clear();
   changeBound = false;
 }
