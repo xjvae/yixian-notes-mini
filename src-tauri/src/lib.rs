@@ -11,18 +11,19 @@
 //   hotkeys  ：全局快捷键（逐条注册、逐条容忍失败、改键落库）
 //   tray     ：系统托盘
 //
-// 装配顺序：状态先 manage（命令与托盘都拿它）→ 数据层（开库 → 迁移 → 清算 →
-// 开机恢复）→ 托盘 → 快捷键。库打不开时不 manage：数据命令统一失败，
-// 托盘的「退出」仍然可用——应用必须留一条用户能自己退出去的路。
+// 装配顺序：状态先 manage（命令与托盘都拿它）→ 数据层（开库 → 迁移 → 导入 →
+// 清算 → 开机恢复）→ 托盘 → 快捷键 → 鼠标钩子。库打不开时不 manage：数据命令
+// 统一失败，托盘的「退出」仍然可用——应用必须留一条用户能自己退出去的路。
 //
-// 钩子（WH_MOUSE_LL 长按右键唤星环）随 M4 落地，落地时同样遵守：
-// 兄弟实例活着时绝不重复注册。
+// 退出清理（RunEvent::Exit）：先卸鼠标钩子再走其余清理——钩子不卸，进程收尸后
+// 全系统右键都会被一个死人钩子吞掉，症状是"退出了右键还是坏的"。
 
 mod commands;
 mod data;
 mod db;
 mod hotkeys;
 mod import;
+mod input;
 mod support;
 mod tray;
 mod windows;
@@ -33,7 +34,7 @@ use crate::db::pool::Db;
 use crate::support::log;
 
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             // 二次启动 = 唤起星环：星环没有窗内状态，重复唤起只是再显示一次。
             // 回调里不碰锁不碰 DB（这条路可能跑在别人家的线程上，且此刻兄弟进程还活着）
@@ -169,6 +170,23 @@ pub fn run() {
                 .map(|value| hotkeys::bindings_override_from(Some(value.as_str())))
                 .unwrap_or_default();
             hotkeys::register_all(&handle, &overrides);
+            // 长按右键钩子最后装（准出判定在回调里是原子量读，装晚不亏）。
+            // 持久化配置（阈值/白名单）先于 spawn 灌进去，钩子起跑就是生效值。
+            if let Some(database) = app.try_state::<Db>() {
+                if let Ok(Some(hold)) =
+                    db::query::settings::get(database.inner(), commands::hook::HOLD_MS_KEY)
+                    && let Ok(ms) = hold.parse::<u32>()
+                {
+                    input::set_hold_ms(ms);
+                }
+                if let Ok(Some(list)) =
+                    db::query::settings::get(database.inner(), commands::hook::WHITELIST_KEY)
+                    && let Ok(raws) = serde_json::from_str::<Vec<String>>(&list)
+                {
+                    input::set_whitelist(&raws);
+                }
+            }
+            input::spawn(handle);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -211,7 +229,17 @@ pub fn run() {
             commands::window::float_dock_unregister,
             commands::window::monitor_work_area,
             commands::hotkey::app_set_hotkey,
+            commands::hook::hook_status,
+            commands::hook::hook_set_config,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|_app_handle, event| {
+        // 退出清理的**第一件事**是卸鼠标钩子：钩子还挂着时进程若先死，
+        // 全系统右键会被一个死人的钩子吞掉——这条必须排在一切清理之前。
+        if let tauri::RunEvent::Exit = event {
+            input::shutdown();
+        }
+    });
 }

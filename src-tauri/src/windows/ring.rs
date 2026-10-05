@@ -23,6 +23,14 @@ const RING_ENTRY: &str = "ring.html";
 const RING_SIZE: f64 = 420.0;
 
 pub async fn open(app: &AppHandle) -> AppResult<()> {
+    // 快捷键/托盘唤起：以当前光标为中心
+    let cursor = cursor_position().unwrap_or((120, 120));
+    open_at(app, cursor.0 as i32, cursor.1 as i32).await
+}
+
+/// 钩子路径：在**按下点**（物理像素）唤起。松手位置≈按下位置，但用按下点
+/// 而不是再取一次光标——中间这一瞬手可能已经挪走，语义上"在按住的地方出盘"。
+pub async fn open_at(app: &AppHandle, x: i32, y: i32) -> AppResult<()> {
     let spec = WindowSpec {
         label: RING_LABEL.into(),
         url: RING_ENTRY.into(),
@@ -36,8 +44,8 @@ pub async fn open(app: &AppHandle) -> AppResult<()> {
         init_script: None,
     };
     let window = build_window(app, spec).await?;
-    // 已存在的窗（秒开那条路）也要重新落回光标处
-    place_at_cursor(&window)?;
+    // 已存在的窗（秒开那条路）也要重新落回唤起点
+    place_at(&window, x as i64, y as i64)?;
     Ok(())
 }
 
@@ -49,23 +57,17 @@ pub async fn close(app: &AppHandle) -> AppResult<()> {
         .map_err(|e| AppError::new("WINDOW_HIDE", e.to_string()))
 }
 
-/// 把环的中心摆到光标上（光标给的是物理像素，环的尺寸是逻辑像素）。
-/// 取不到光标（无鼠标设备、会话锁屏等）就退回左上角，不抛错——
-/// "按了没反应"比"摆在角落"更难诊断。
-fn place_at_cursor(window: &tauri::WebviewWindow) -> AppResult<()> {
+/// 把环的中心摆到指定点（物理像素）。落在屏幕边缘或副屏时把整块环拉回
+/// 工作区内：半个环出界 = 两个节点点不到。
+fn place_at(window: &tauri::WebviewWindow, x: i64, y: i64) -> AppResult<()> {
     let scale = window
         .scale_factor()
         .map_err(|e| AppError::new("WINDOW_SCALE", e.to_string()))?;
     let size_phys = (RING_SIZE * scale) as i64;
     let half = size_phys / 2;
-    let Some(cursor) = cursor_position() else {
-        let _ = window.set_position(PhysicalPosition::new(120, 120));
-        return Ok(());
-    };
-    // 落在屏幕边缘或副屏时把整块环拉回工作区内：半个环出界 = 两个节点点不到
-    let position = match monitor::at(cursor) {
-        Some(area) => area.clamp_block((cursor.0 - half, cursor.1 - half), size_phys, size_phys),
-        None => (cursor.0 - half, cursor.1 - half),
+    let position = match monitor::at((x, y)) {
+        Some(area) => area.clamp_block((x - half, y - half), size_phys, size_phys),
+        None => (x - half, y - half),
     };
     let _ = window.set_position(PhysicalPosition::new(
         position.0 as i32,

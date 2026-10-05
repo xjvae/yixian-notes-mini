@@ -28,11 +28,15 @@ base64 = "0.22"
 zeroize = "1.8"
 # bundled SQLite：与 TS 检索（FTS5 中文二字组，ROADMAP M2）共用一个编译单元
 rusqlite = { version = "0.40.2", features = ["bundled"] }
-# Win32：monitor_work_area 取工作区（贴边细丝不压任务栏）
+# Win32：monitor_work_area 取工作区（贴边细丝不压任务栏）+ WH_MOUSE_LL 长按右键钩子
+# （吞 down + 阈值 + 补偿注入）+ 前台进程白名单采样（OpenProcess/QueryFullProcessImageNameW）
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
 ] }
 
 # 随 ROADMAP 加入：argon2/aes-gcm/base64/zeroize（私密层 M3）、
