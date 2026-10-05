@@ -9,6 +9,11 @@ import prettier from "eslint-config-prettier";
 export default tseslint.config(
   { ignores: ["dist", "coverage", "src-tauri/target", "src-tauri/gen"] },
   js.configs.recommended,
+  // Node 脚本（scripts/*.mjs）跑在 node 全局里，浏览器 globals 不适用
+  {
+    files: ["scripts/**/*.mjs"],
+    languageOptions: { globals: { ...globals.node } },
+  },
   // 类型化规则只作用于 ts/tsx：eslint.config.js 这类 js 文件不在 tsconfig 工程里
   ...tseslint.configs.recommendedTypeChecked.map((config) => ({
     ...config,

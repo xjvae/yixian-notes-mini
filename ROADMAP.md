@@ -55,7 +55,7 @@
 - [x] 设置窗（外观三档主题 / 行为开机恢复开关 / 数据立即备份）
 - [x] 全局快捷键后端：默认 Alt+1..4 直达（新建/搜索/回收站/设置）+ Alt+Space 唤星环，
       逐条注册逐条容忍失败，app_set_hotkey 校验+热重绑+落库（被占用回退旧键）；
-      **设置窗的改键 UI（键盘捕获组件）还没落** —— 星环已落，这块不再有别的前置
+      **设置窗的改键 UI 已落**（键盘捕获：Esc 取消、纯修饰键不结束捕获、必须带 Ctrl/Alt；键名走 event.code 与 global-hotkey 同口径，见 hotkey-section.tsx）
 - [x] 深色模式（scheme.ts 三档 + <html data-theme> 变量层 + 便签深色成对纸色/强调色）
 - [x] 文件日志（按天 mini.log.YYYYMMDD、保留 7 天、stderr 双写）；崩溃转储随 M4
 
@@ -93,9 +93,9 @@
       收场三条：点节点、点环外空白、Esc，外加窗失焦。
       工作区取值那份 unsafe 集中到 `windows/monitor.rs`，命令层 monitor_work_area 与星环共用；
       负坐标的副屏有夹取用例
-- [ ] WH_MOUSE_LL 长按右键钩子（吞 down + 阈值 + 补偿注入 + 前台进程白名单采样线程）
+- [x] WH_MOUSE_LL 长按右键钩子：state.rs 纯状态机（按下吞事件起计时→阈值只武装→松手在松手点开盘；短按 SendInput 补一对完整 down/up；位移>6px 判拖拽补 down 转透传）+ allowlist.rs 纯白名单（基名/结尾通配/去重/上限32，读不到算不命中）+ win_hook.rs 机器房（回调零跨进程/try_lock 竞争即放行/LLMHF_INJECTED 防自反馈；采样线程 200ms；退出 PostThreadMessageW(WM_QUIT)+500ms+主线程卸钩兜底）。阈值 450 默认/150..=2000 夹取，落库；暂停不落库（重启即恢复）
 - [x] 单实例唤起：二次启动不再静默退出，回调里唤起星环（回调内不碰锁不碰 DB）
-- [ ] 退出清理（钩子卸载兜底，随钩子落）、崩溃转储
+- [x] 退出清理：RunEvent::Exit 第一件事 input::shutdown()（换 build()+app.run(closure)）。崩溃转储：有意不做（文件日志已够定位，且 panic=abort 下留不了堆）
 - [x] window_state 面板窗记忆（搜索/回收站/设置三扇，合流 600ms，物理像素往返）
 - [x] 旧版 mini.db 一次性导入（幂等标记同事务；只读旧库；列映射逐格对齐；
       items "[x] 文本"+item_ids 合成对象数组；墙存量 floating=0 导入时摊回桌面；
@@ -103,9 +103,9 @@
 
 ### M5 · 1.0
 
-- [ ] 全量真机清单（钩子/贴边/多显示器/DPI/私密三件套/单实例/退出）
-- [ ] NSIS 安装包 + ≤12MB 体积门禁 + size 报告
-- [ ] ARCHITECTURE.md（目标架构 + 数据流 + 不变量）
+- [ ] 全量真机清单（钩子/贴边/多显示器/DPI/私密三件套/单实例/退出）——作者执行，清单见 README 与各期验收注
+- [x] NSIS 安装包 + 体积门禁（`npm run size`：dist ≤1.5MB 预警、安装包 ≤12MB 硬线 --ci 可作 release 关卡）
+- [x] ARCHITECTURE.md（目标架构 + 数据流 + 不变量 + 纪律清单）
 
 ## 执行约定
 
