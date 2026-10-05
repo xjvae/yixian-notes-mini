@@ -76,6 +76,24 @@ export interface StickyNote {
 /** 写入侧：时间戳与删除时钟归 Rust，前端不许伪造 */
 export type StickyInput = Omit<StickyNote, "createdAt" | "updatedAt" | "deletedAt">;
 
+/**
+ * 组合行（GroupRow 的镜像）。成员关系不住这里——`StickyNote.groupId` 是唯一住址，
+ * 张数与"空组"全是算出来的。这行只有叫什么、什么色、开合、叠窗几何。
+ */
+export interface StickyGroup {
+  id: string;
+  name: string;
+  color: string | null;
+  collapsed: boolean;
+  /** 叠窗几何，逻辑像素；null = 未摆过位（开窗路径级联落点） */
+  x: number | null;
+  y: number | null;
+  width: number | null;
+  height: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
 /** 首屏引导：一次 IPC 拿齐挂载前的全部数据 */
 export interface Bootstrap {
   stickies: StickyNote[];
@@ -123,6 +141,14 @@ export interface PrivateStatus {
 /** 事件名常量：拼错是编译错误 */
 export const DB_CHANGED = "db:changed";
 export const PRIVATE_CHANGED = "store:private-changed";
+/** 让某扇叠窗翻到指定那张（点搜索结果 / 归组 / 回收站恢复；窗已在了才用得上） */
+export const STICKY_REVEAL = "sticky:reveal";
+
+/** 叠窗落点。广播给所有窗，叠窗按 groupId 认领（与 db:changed 同一口径） */
+export interface StickyRevealEvent {
+  groupId: string;
+  stickyId: string;
+}
 
 /** 窗口注入的全局名（factory.rs 的初始化脚本写入）——跨语言契约 */
 export const STICKY_ID_GLOBAL = "__STICKY_ID__";

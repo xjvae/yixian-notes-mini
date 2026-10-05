@@ -115,6 +115,21 @@ describe("updateNote 实体粒度写", () => {
     const sent = backend.upserts.map((input) => input.id).sort();
     expect(sent).toEqual(["a", "b"]);
   });
+
+  it("组由后端直改：回填内存后整行 upsert 不许覆回原组", async () => {
+    vi.useFakeTimers();
+    await hydrateStore();
+    updateNote("a", { groupId: "g1" });
+    await vi.advanceTimersByTimeAsync(250);
+    // sticky_set_group 走的是 SQLite 直 UPDATE，不过 store：内存不回填，
+    // 下一次整行 upsert 就把便签悄悄塞回原组（移出错觉成功，其实是没移走）
+    updateNote("a", { groupId: null });
+    updateNote("a", { title: "移出之后又改了标题" });
+    await vi.advanceTimersByTimeAsync(250);
+    const last = backend.upserts.at(-1);
+    expect(last?.title).toBe("移出之后又改了标题");
+    expect(last?.groupId).toBeNull();
+  });
 });
 
 describe("远端合流", () => {

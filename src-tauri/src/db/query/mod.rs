@@ -1,3 +1,4 @@
+pub mod group;
 pub mod search;
 pub mod settings;
 pub mod sticky;

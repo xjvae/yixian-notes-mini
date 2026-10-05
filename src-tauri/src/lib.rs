@@ -5,8 +5,9 @@
 //   db       ：SQLite 主库（pool / migrate / models / query）——唯一主存
 //   commands ：前端 invoke 的入口（db 引导与设置 / entity 便签与回收站 /
 //              search 检索 / window 窗口域与贴边与工作区）
-//   windows  ：窗口构建（factory 声明式规格 + 防重复注册 / float 浮窗 /
-//              dock 贴边槽位 / search·trash·settings 面板窗）
+//   windows  ：窗口构建（factory 声明式规格 + 防重复注册 / float 浮窗与叠窗 /
+//              dock 贴边槽位 / search·trash·settings·unlock·ring 面板窗 /
+//              monitor 工作区取值的唯一一份）
 //   hotkeys  ：全局快捷键（逐条注册、逐条容忍失败、改键落库）
 //   tray     ：系统托盘
 //
@@ -33,8 +34,15 @@ use crate::support::log;
 
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|_app, _argv, _cwd| {
-            // 二次启动：骨架期无事可做；星环落地后在这里唤起它
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            // 二次启动 = 唤起星环：星环没有窗内状态，重复唤起只是再显示一次。
+            // 回调里不碰锁不碰 DB（这条路可能跑在别人家的线程上，且此刻兄弟进程还活着）
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = windows::ring::open(&app).await {
+                    support::log::warn("single-instance", &format!("唤起星环失败：{e}"));
+                }
+            });
         }))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(windows::factory::CreatingRegistry::default())
@@ -87,6 +95,10 @@ pub fn run() {
                         Ok(n) => support::log::info("db", &format!("回收站到期清算 {n} 条")),
                         Err(e) => support::log::warn("db", &format!("回收站清算没跑成：{e}")),
                     }
+                    // 清算可能带走某个组的最后一张：组行跟着清，绝不留空组（叠窗按组恢复读的就是组行）
+                    if let Err(e) = db::query::group::prune_empty(&database) {
+                        support::log::warn("db", &format!("空组清理没跑成：{e}"));
+                    }
                     // 开机恢复桌面便签：floating=1 且未删的逐张拉回。
                     // 「开机恢复」设置项默认开，显式写 "0" 才算关（三态口径）。
                     let restore_on_boot =
@@ -97,7 +109,9 @@ pub fn run() {
                     if restore_on_boot {
                         match db::query::sticky::list(&database, false) {
                             Ok(rows) => {
-                                for row in rows.into_iter().filter(|row| row.floating) {
+                                for row in rows.into_iter().filter(|row| {
+                                    row.floating && row.group_id.is_none()
+                                }) {
                                     let handle = handle.clone();
                                     let database = database.clone();
                                     tauri::async_runtime::spawn(async move {
@@ -113,6 +127,29 @@ pub fn run() {
                                 }
                             }
                             Err(e) => support::log::warn("restore", &format!("开机恢复读库失败：{e}")),
+                        }
+                        // 叠窗按组恢复：一叠一扇（组员的单窗不开，成员在叠窗里翻页）
+                        match db::query::group::stacks_to_restore(&database) {
+                            Ok(gids) => {
+                                for gid in gids {
+                                    let handle = handle.clone();
+                                    let database = database.clone();
+                                    tauri::async_runtime::spawn(async move {
+                                        if let Err(e) =
+                                            windows::float::open_group_stack(
+                                                &handle, &database, &gid, None,
+                                            )
+                                                .await
+                                        {
+                                            support::log::warn(
+                                                "restore",
+                                                &format!("开机恢复叠窗 {gid} 失败：{e}"),
+                                            );
+                                        }
+                                    });
+                                }
+                            }
+                            Err(e) => support::log::warn("restore", &format!("叠窗恢复读库失败：{e}")),
                         }
                     }
                     app.manage(database);
@@ -145,6 +182,8 @@ pub fn run() {
             commands::entity::sticky_upsert,
             commands::entity::sticky_delete,
             commands::entity::trash_restore,
+            commands::entity::sticky_set_group,
+            commands::entity::group_list,
             commands::search::search_query,
             commands::private::private_status,
             commands::private::private_setup,
@@ -165,6 +204,9 @@ pub fn run() {
             commands::window::close_settings_window,
             commands::window::open_unlock_window,
             commands::window::close_unlock_window,
+            commands::window::open_ring_window,
+            commands::window::close_ring_window,
+            commands::window::close_group_stack,
             commands::window::float_dock_register,
             commands::window::float_dock_unregister,
             commands::window::monitor_work_area,

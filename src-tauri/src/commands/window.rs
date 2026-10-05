@@ -4,14 +4,10 @@
 
 use serde::Serialize;
 use tauri::{AppHandle, State, WebviewWindow};
-use windows::Win32::Foundation::POINT;
-use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MonitorFromPoint, MONITOR_DEFAULTTONEAREST, MONITORINFO,
-};
 
 use crate::db::pool::Db;
 use crate::support::error::{AppError, AppResult};
-use crate::windows::{dock::DockLayout, float, search, settings, trash, unlock};
+use crate::windows::{dock::DockLayout, float, monitor, ring, search, settings, trash, unlock};
 
 #[tauri::command]
 pub async fn create_floating_sticky(app: AppHandle, db: State<'_, Db>) -> AppResult<String> {
@@ -70,6 +66,22 @@ pub async fn close_unlock_window(app: AppHandle) -> AppResult<()> {
     unlock::close(&app).await
 }
 
+#[tauri::command]
+pub async fn open_ring_window(app: AppHandle) -> AppResult<()> {
+    ring::open(&app).await
+}
+
+#[tauri::command]
+pub async fn close_ring_window(app: AppHandle) -> AppResult<()> {
+    ring::close(&app).await
+}
+
+/// 关闭并销毁一扇叠窗（成员清空时由叠窗自己调用退场）
+#[tauri::command]
+pub async fn close_group_stack(app: AppHandle, gid: String) -> AppResult<()> {
+    float::close_stack(&app, &gid).await
+}
+
 // —— 贴边 ——
 
 #[tauri::command]
@@ -105,27 +117,13 @@ pub async fn monitor_work_area(win: WebviewWindow) -> AppResult<WorkArea> {
     let position = win
         .outer_position()
         .map_err(|e| AppError::new("WINDOW_POS", e.to_string()))?;
-    let point = POINT {
-        x: position.x,
-        y: position.y,
-    };
-    // SAFETY：MONITORINFO 的 cbSize 按约定填好；GetMonitorInfoW 只读显示器信息，
-    // 不持有任何跨调用指针。WindowsAndMessaging/Gdi 的这两个调用不涉及其它线程。
-    let area = unsafe {
-        let monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
-        let mut info = MONITORINFO {
-            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-            ..Default::default()
-        };
-        if !GetMonitorInfoW(monitor, &mut info).as_bool() {
-            return Err(AppError::new("MONITOR", "取显示器工作区失败"));
-        }
-        WorkArea {
-            x: info.rcWork.left as i64,
-            y: info.rcWork.top as i64,
-            width: (info.rcWork.right - info.rcWork.left) as i64,
-            height: (info.rcWork.bottom - info.rcWork.top) as i64,
-        }
-    };
-    Ok(area)
+    // SAFETY 那份集中在 windows/monitor.rs，这里只搬运结果
+    let area = monitor::at((position.x as i64, position.y as i64))
+        .ok_or_else(|| AppError::new("MONITOR", "取显示器工作区失败"))?;
+    Ok(WorkArea {
+        x: area.x,
+        y: area.y,
+        width: area.width,
+        height: area.height,
+    })
 }

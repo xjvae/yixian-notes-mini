@@ -3,15 +3,17 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
-// 入口 = 窗口类型。main（便签浮窗）、trash（回收站）、search（搜索）、
-// settings（设置）、unlock（口令窗）；星环随 M4 加入，
+// 入口 = 窗口类型。main（便签浮窗与叠窗，index.html 内按注入身份分岔）、trash（回收站）、
+// search（搜索）、settings（设置）、unlock（口令窗）、ring（星环）；
 // 加入时 Rust 侧 WindowSpec 的 url 必须与这里一一对应。
-export default defineConfig({
+// preview（预览台）只在 dev server 上存在：tauri 的构建产物里不许有它，
+// 它带着替身桥，装进包里就是给生产留一条假 IPC 的路。
+export default defineConfig(({ command }) => ({
   plugins: [react(), tailwindcss()],
   base: "./",
   resolve: {
     alias: {
-      "@": path.resolve(__dirname, "src"),
+      "@": path.resolve(import.meta.dirname, "src"),
     },
   },
   build: {
@@ -22,11 +24,15 @@ export default defineConfig({
     modulePreload: false,
     rollupOptions: {
       input: {
-        main: path.resolve(__dirname, "index.html"),
-        trash: path.resolve(__dirname, "trash.html"),
-        search: path.resolve(__dirname, "search.html"),
-        settings: path.resolve(__dirname, "settings.html"),
-        unlock: path.resolve(__dirname, "unlock.html"),
+        main: path.resolve(import.meta.dirname, "index.html"),
+        trash: path.resolve(import.meta.dirname, "trash.html"),
+        search: path.resolve(import.meta.dirname, "search.html"),
+        settings: path.resolve(import.meta.dirname, "settings.html"),
+        unlock: path.resolve(import.meta.dirname, "unlock.html"),
+        ring: path.resolve(import.meta.dirname, "ring.html"),
+        ...(command === "serve"
+          ? { preview: path.resolve(import.meta.dirname, "preview.html") }
+          : {}),
       },
       output: {
         entryFileNames: "assets/[name]-[hash].js",
@@ -43,4 +49,4 @@ export default defineConfig({
       ignored: ["**/src-tauri/target/**"],
     },
   },
-});
+}));

@@ -1,7 +1,7 @@
 // 全局快捷键 — 逐条注册、逐条容忍失败：任何一条被占用都不许让启动失败
 // （曾经就是这条路径上的 `?` 把整个应用 panic 掉 = "装完打不开"）。
 //
-// 默认绑定是四条直达（Alt+1..4）；「唤起星环」的 Alt+Space 随星环（M4）进表。
+// 默认绑定是四条直达（Alt+1..4）加「唤起星环」的 Alt+Space。
 // 改键：settings 表 `hotkeys` 键存 JSON map（action → accelerator 字符串，
 // 空串 = 显式不绑），`app_set_hotkey` 落库并即时重绑，跨启动生效。
 //
@@ -19,7 +19,7 @@ use crate::db::query::settings;
 use crate::support::error::{AppError, AppResult};
 use crate::support::log;
 use crate::windows::settings as settings_window;
-use crate::windows::{float, search, trash};
+use crate::windows::{float, ring, search, trash};
 
 pub const HOTKEYS_SETTING_KEY: &str = "hotkeys";
 
@@ -29,6 +29,7 @@ pub const DEFAULT_BINDINGS: &[(&str, &str)] = &[
     ("search", "Alt+2"),
     ("trash", "Alt+3"),
     ("settings", "Alt+4"),
+    ("ring", "Alt+Space"),
 ];
 
 /// 当前生效的绑定：action → accelerator。管理态，命令层经它解旧绑。
@@ -152,6 +153,14 @@ fn fire(app: &AppHandle, action: &str) {
                 let _ = settings_window::open(&app).await;
             });
         }
+        "ring" => {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = ring::open(&app).await {
+                    log::warn("hotkeys", &format!("唤起星环失败：{e}"));
+                }
+            });
+        }
         other => {
             log::warn("hotkeys", &format!("未知动作 {other}，忽略"));
         }
@@ -221,10 +230,14 @@ mod tests {
     }
 
     #[test]
-    fn 默认绑定表是四条直达() {
-        assert_eq!(DEFAULT_BINDINGS.len(), 4);
-        assert!(DEFAULT_BINDINGS.iter().all(|(action, key)| {
-            (!action.is_empty()) && key.starts_with("Alt+")
-        }));
+    fn 默认绑定表_四条直达加星环() {
+        assert_eq!(DEFAULT_BINDINGS.len(), 5);
+        assert!(
+            DEFAULT_BINDINGS
+                .iter()
+                .all(|(action, key)| { (!action.is_empty()) && key.starts_with("Alt+") }),
+            "默认表里的动作不许有空名，键位都在 Alt+ 一档"
+        );
+        assert!(DEFAULT_BINDINGS.contains(&("ring", "Alt+Space")));
     }
 }

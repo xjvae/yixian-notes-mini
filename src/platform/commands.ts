@@ -5,6 +5,7 @@ import type {
   Bootstrap,
   PrivateStatus,
   SearchHit,
+  StickyGroup,
   StickyInput,
   StickyNote,
   WorkArea,
@@ -39,6 +40,23 @@ export function createFloatingSticky(): Promise<string> {
 /** 关闭并销毁一扇便签窗（销毁在 Rust 侧做：close 依赖前端监听器往返，会留僵尸窗） */
 export function closeFloatingSticky(id: string): Promise<void> {
   return invoke<void>("close_floating_sticky", { id });
+}
+
+// —— 组合（降级口径：无新建组入口，只能移进已有组）——
+
+/** 归组清单（归组菜单的候选，只含非空组：空组行在写路径上就被清了） */
+export function groupList(): Promise<StickyGroup[]> {
+  return invoke<StickyGroup[]>("group_list");
+}
+
+/** 移进已有组（收进叠窗）/ 移出（弹回桌面单窗）。groupId=null 即移出 */
+export function stickySetGroup(id: string, groupId: string | null): Promise<boolean> {
+  return invoke<boolean>("sticky_set_group", { id, groupId });
+}
+
+/** 关闭并销毁一扇叠窗（叠窗发现成员清空时自己调用退场） */
+export function closeGroupStack(gid: string): Promise<void> {
+  return invoke<void>("close_group_stack", { gid });
 }
 
 /** 打开/聚焦回收站窗 */
@@ -155,6 +173,18 @@ export function privateRekey(password: string): Promise<void> {
 /** 重置（忘记密码的唯一出路）：清空全部私密内容 */
 export function privateReset(password: string): Promise<void> {
   return invoke<void>("private_reset", { password });
+}
+
+// —— 星环 ——
+
+/** 打开（或显示）星环：单例，每次开在光标处 */
+export function openRingWindow(): Promise<void> {
+  return invoke<void>("open_ring_window");
+}
+
+/** 收起星环（关 = 隐藏，下次秒开） */
+export function closeRingWindow(): Promise<void> {
+  return invoke<void>("close_ring_window");
 }
 
 // —— 口令窗 ——

@@ -13,6 +13,23 @@ pub struct StickyItem {
     pub done: bool,
 }
 
+/// 组合行。成员关系不住这里——`stickies.group_id` 是唯一住址，
+/// 张数/空组全是算出来的；这行只有"叫什么、什么色、开合、叠窗几何"。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupRow {
+    pub id: String,
+    pub name: String,
+    pub color: Option<String>,
+    pub collapsed: bool,
+    pub x: Option<i64>,
+    pub y: Option<i64>,
+    pub width: Option<i64>,
+    pub height: Option<i64>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
 /// 时间轴条目：这一类便签的正文（带时刻）。id 稳定供 React key。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct TimelineEntry {

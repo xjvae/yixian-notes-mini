@@ -42,6 +42,12 @@ export async function boot({
   hydrate = true,
   render,
 }: BootOptions): Promise<void> {
+  if (import.meta.env.DEV) {
+    // 预览台（http://localhost:5174/preview.html）里每一扇 iframe 窗都先装替身桥再装配。
+    // 生产构建里这段整个被折掉：DEV=false → 动态 chunk 不被引用，桥恒为真 Tauri。
+    const { installPreviewBridge } = await import("@/preview/bridge-client");
+    installPreviewBridge();
+  }
   const mount = () => {
     const root = document.getElementById("root");
     if (!root) return;

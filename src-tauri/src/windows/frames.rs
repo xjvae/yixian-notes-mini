@@ -12,8 +12,8 @@ use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewWindow};
 use crate::db::pool::Db;
 use crate::db::query::window_state;
 
-/// 参与记忆的窗 label（解锁窗是一次性的，不记；星环随 M4 加入）
-pub const PANEL_LABELS: &[&str] = &[
+/// 固定单例面板（叠窗 stickygrp-* 按前缀动态判定，见 `is_tracked`）
+const PANEL_LABELS: &[&str] = &[
     crate::windows::search::SEARCH_LABEL,
     crate::windows::trash::TRASH_LABEL,
     crate::windows::settings::SETTINGS_LABEL,
@@ -25,8 +25,14 @@ const MERGE_MS: u64 = 600;
 #[derive(Default)]
 pub struct PanelFrames(Mutex<HashMap<String, ()>>);
 
+/// 参与记忆的窗 label（解锁窗是一次性的，不记；叠窗 stickygrp-* 与面板一样记；
+/// 星环 ring **不记**——它每次开在光标处，记住上次的摆位就没了"手在哪环在哪"的意义）
+pub fn is_tracked(label: &str) -> bool {
+    PANEL_LABELS.contains(&label) || label.starts_with(crate::windows::float::GROUP_PREFIX)
+}
+
 pub fn track(app: &AppHandle, label: &str) {
-    if !PANEL_LABELS.contains(&label) {
+    if !is_tracked(label) {
         return;
     }
     {

@@ -1,5 +1,7 @@
-// withPrivateLayer 行为契约 — 读写拆合的四条语义：
-// 未启用直通 / 启用未解锁只写占位 / 启用已解锁读合并写拆分 / 硬删带走真身。
+// withPrivateLayer 行为契约 — 读写拆合的语义：
+// 未启用直通 / 启用未解锁只写占位 / 启用已解锁读合并写拆分 / 硬删带走真身 /
+// 落盘形状只认 privateStatus 的权威状态——缓存位晚半拍既不许写成明文，
+// 也不许在没装填封套的情况下整份重写（那会抹掉别人的真身）。
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { StickyInput, StickyNote } from "@/platform/contracts";
@@ -7,14 +9,28 @@ import { createDefaultSticky } from "@/data/entities";
 import { withPrivateLayer } from "@/store/private-backend";
 import type { NotesBackend } from "@/store/backend";
 
-const state = { active: false, unlocked: false };
+/** private-state 的缓存位（界面遮罩用它）：用例故意让它与 authority 不一致 */
+const cache = { active: false, unlocked: false };
+/** Rust 的权威状态，即 privateStatus 的返回值 */
+const authority = { configured: false, unlocked: false };
 const savedMaps: string[] = [];
 
+/** 缓存与权威一致的摆位（大多数用例用这个） */
+function layer(active: boolean, unlocked: boolean): void {
+  cache.active = active;
+  cache.unlocked = unlocked;
+  authority.configured = active;
+  authority.unlocked = unlocked;
+}
+
 vi.mock("@/data/private-state", () => ({
-  isPrivateLayerActive: () => state.active,
-  isPrivateUnlocked: () => state.unlocked,
+  isPrivateLayerActive: () => cache.active,
+  isPrivateUnlocked: () => cache.unlocked,
 }));
 vi.mock("@/platform/commands", () => ({
+  privateStatus: vi.fn(() =>
+    Promise.resolve({ configured: authority.configured, unlocked: authority.unlocked }),
+  ),
   privateLoad: vi.fn(() => Promise.resolve(JSON.stringify(sealedOnDisk))),
   privateSave: vi.fn((data: string) => {
     savedMaps.push(data);
@@ -58,10 +74,9 @@ class FakeBackend implements NotesBackend {
 let inner: FakeBackend;
 
 beforeEach(() => {
-  state.active = false;
-  state.unlocked = false;
+  layer(false, false);
   savedMaps.length = 0;
-  sealedOnDisk["s1"] = { title: "加密的真身标题", body: "加密的真身正文" };
+  sealedOnDisk.s1 = { title: "加密的真身标题", body: "加密的真身正文" };
   inner = new FakeBackend();
   // 主库里私密便签只有空占位（Rust 侧写拆分的结果）
   inner.rows.set("s1", note("s1", { private: true, title: "", body: "" }));
@@ -76,8 +91,7 @@ describe("读合并", () => {
   });
 
   it("启用且已解锁：私密行合并回真身，普通行不动", async () => {
-    state.active = true;
-    state.unlocked = true;
+    layer(true, true);
     const backend = withPrivateLayer(inner);
     const rows = await backend.bootstrap();
     expect(rows.find((row) => row.id === "s1")?.title).toBe("加密的真身标题");
@@ -86,8 +100,7 @@ describe("读合并", () => {
   });
 
   it("启用但未解锁：保持占位（锁定态显示遮罩，不泄露真身）", async () => {
-    state.active = true;
-    state.unlocked = false;
+    layer(true, false);
     const backend = withPrivateLayer(inner);
     const rows = await backend.bootstrap();
     expect(rows.find((row) => row.id === "s1")?.title).toBe("");
@@ -96,7 +109,6 @@ describe("读合并", () => {
 
 describe("写拆分", () => {
   it("未启用：私密标记只是标记，内容明文进主库", async () => {
-    state.active = false;
     const backend = withPrivateLayer(inner);
     await backend.upsert(note("s1", { private: true, title: "明文标题" }));
     expect(inner.upserts[0].title).toBe("明文标题");
@@ -104,8 +116,7 @@ describe("写拆分", () => {
   });
 
   it("启用且已解锁：真身进密封套，主库只落占位", async () => {
-    state.active = true;
-    state.unlocked = true;
+    layer(true, true);
     const backend = withPrivateLayer(inner);
     await backend.upsert(note("s1", { private: true, title: "新真身", body: "新正文" }));
     expect(savedMaps.length).toBe(1);
@@ -119,19 +130,50 @@ describe("写拆分", () => {
   });
 
   it("启用但未解锁：只写占位，不碰密封套", async () => {
-    state.active = true;
-    state.unlocked = false;
+    layer(true, false);
     const backend = withPrivateLayer(inner);
     await backend.upsert(note("s1", { private: true, title: "" }));
     expect(savedMaps.length).toBe(0);
     expect(inner.upserts[0].title).toBe("");
   });
+
+  it("缓存位还停在未配置、后端其实已配好并解锁：不许把明文写进主库", async () => {
+    // 刚配完口令的那一窗：store:private-changed 的往返还没落地，本地缓存说"没配置"
+    cache.active = false;
+    cache.unlocked = false;
+    authority.configured = true;
+    authority.unlocked = true;
+    const backend = withPrivateLayer(inner);
+    await backend.upsert(
+      note("s3", { private: true, title: "刚标私密的标题", body: "正文" }),
+    );
+    const row = inner.upserts[0];
+    expect(row.title).toBe("");
+    expect(row.body).toBe("");
+    expect(savedMaps.length, "真身该进封套，不该留在主库").toBe(1);
+  });
+
+  it("整份重写封套前先装填：别人的真身不许被抹掉", async () => {
+    cache.active = false;
+    cache.unlocked = false;
+    authority.configured = true;
+    authority.unlocked = true;
+    const backend = withPrivateLayer(inner);
+    await backend.upsert(note("s3", { private: true, title: "新加的私密" }));
+    const savedMap = JSON.parse(savedMaps[0] ?? "{}") as Record<
+      string,
+      { title: string }
+    >;
+    expect(savedMap.s1?.title, "privateSave 是整份重写，必须先读回原有内容").toBe(
+      "加密的真身标题",
+    );
+    expect(savedMap.s3?.title).toBe("新加的私密");
+  });
 });
 
 describe("硬删", () => {
   it("真删私密便签：密封套里的真身一并带走", async () => {
-    state.active = true;
-    state.unlocked = true;
+    layer(true, true);
     const backend = withPrivateLayer(inner);
     await backend.bootstrap(); // 真实流程里 sealed 先随读入同步
     await backend.remove("s1", true);
@@ -141,8 +183,7 @@ describe("硬删", () => {
   });
 
   it("软删不动密封套（恢复后内容还在）", async () => {
-    state.active = true;
-    state.unlocked = true;
+    layer(true, true);
     const backend = withPrivateLayer(inner);
     await backend.remove("s1", false);
     expect(savedMaps.length).toBe(0);
