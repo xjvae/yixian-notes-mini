@@ -3,6 +3,8 @@
 
 import type {
   Bootstrap,
+  HookStatus,
+  HotkeyBinding,
   PrivateStatus,
   SearchHit,
   StickyGroup,
@@ -195,4 +197,30 @@ export function openUnlockWindow(): Promise<void> {
 
 export function closeUnlockWindow(): Promise<void> {
   return invoke<void>("close_unlock_window");
+}
+
+// —— 快捷键与右键劫持 ——
+
+/** 当前生效的快捷键绑定表（改键 UI 的事实来源）。key 空串 = 显式停用 */
+export function hotkeyList(): Promise<HotkeyBinding[]> {
+  return invoke<HotkeyBinding[]>("hotkey_list");
+}
+
+/** 改一条绑定。key 空串 = 停用；失败（被占用/不合法）抛错且旧键自动还原 */
+export function appSetHotkey(action: string, key: string): Promise<void> {
+  return invoke<void>("app_set_hotkey", { action, key });
+}
+
+/** 右键劫持运行态 */
+export function hookStatus(): Promise<HookStatus> {
+  return invoke<HookStatus>("hook_status");
+}
+
+/** 改劫持配置（三项独立可选，只动传来的项） */
+export function hookSetConfig(patch: {
+  paused?: boolean;
+  holdMs?: number;
+  whitelist?: string[];
+}): Promise<void> {
+  return invoke<void>("hook_set_config", patch);
 }

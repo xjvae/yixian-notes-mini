@@ -138,6 +138,20 @@ export interface PrivateStatus {
   unlocked: boolean;
 }
 
+/** 全局快捷键当前生效绑定。key 空串 = 显式停用 */
+export interface HotkeyBinding {
+  action: string;
+  key: string;
+}
+
+/** 右键劫持运行态。foreground = 最近采样的前台进程基名；null = 读不到（提权程序等） */
+export interface HookStatus {
+  paused: boolean;
+  holdMs: number;
+  whitelist: string[];
+  foreground: string | null;
+}
+
 /** 事件名常量：拼错是编译错误 */
 export const DB_CHANGED = "db:changed";
 export const PRIVATE_CHANGED = "store:private-changed";

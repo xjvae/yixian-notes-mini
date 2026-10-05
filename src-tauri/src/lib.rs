@@ -229,6 +229,7 @@ pub fn run() {
             commands::window::float_dock_unregister,
             commands::window::monitor_work_area,
             commands::hotkey::app_set_hotkey,
+            commands::hotkey::hotkey_list,
             commands::hook::hook_status,
             commands::hook::hook_set_config,
         ])

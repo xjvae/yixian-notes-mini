@@ -3,11 +3,13 @@
 // 开机恢复与备份直接读写 settings / data_backup 命令。
 
 import { useCallback, useEffect, useState } from "react";
-import { Database, Power, SunMoon } from "lucide-react";
+import { Database, MousePointerClick, Power, SunMoon, Keyboard } from "lucide-react";
 import { WindowChrome } from "@/ui/window-chrome";
 import { changeScheme, useScheme } from "@/data/scheme";
 import type { SchemeSetting } from "@/data/scheme";
 import { dataBackup, getSetting, settingsSet } from "@/platform/commands";
+import { HotkeySection } from "@/features/settings/hotkey-section";
+import { HookSection } from "@/features/settings/hook-section";
 
 const PANEL_BG = "var(--panel-bg)";
 const PANEL_ACCENT = "var(--panel-ink)";
@@ -148,6 +150,14 @@ export function SettingsWindow() {
           <p className="mt-1.5 text-[11px] text-[var(--panel-muted)]">
             备份是完整快照，存放在数据目录的 backups\ 下，可用任意 SQLite 工具打开。
           </p>
+        </Section>
+
+        <Section icon={<MousePointerClick size={14} aria-hidden />} title="长按右键">
+          <HookSection />
+        </Section>
+
+        <Section icon={<Keyboard size={14} aria-hidden />} title="全局快捷键">
+          <HotkeySection />
         </Section>
       </div>
     </WindowChrome>

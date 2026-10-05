@@ -41,6 +41,22 @@ impl HotkeyRegistry {
         self.lock().get(action).cloned()
     }
 
+    /// 当前生效的绑定表（改键 UI 用）。注册表直接是事实：显式停用的动作记空串，
+    /// 没记过的（理论不存在）回落默认键。
+    pub fn list(&self) -> Vec<(String, String)> {
+        let map = self.lock();
+        DEFAULT_BINDINGS
+            .iter()
+            .map(|(action, default)| {
+                let key = map
+                    .get(*action)
+                    .cloned()
+                    .unwrap_or_else(|| (*default).to_string());
+                ((*action).to_string(), key)
+            })
+            .collect()
+    }
+
     fn set(&self, action: &str, key: Option<String>) {
         let mut map = self.lock();
         match key {
@@ -83,6 +99,8 @@ pub fn register_all(app: &AppHandle, overrides: &HashMap<String, String>) {
             .unwrap_or_else(|| (*default_key).to_string());
         if key.trim().is_empty() {
             log::info("hotkeys", &format!("{action} 被显式停用"));
+            // 注册表里记空串：改键 UI 要能区分"显式停用"和"没配过"
+            app.state::<HotkeyRegistry>().set(action, Some(String::new()));
             continue;
         }
         if bind(app, action, &key) {

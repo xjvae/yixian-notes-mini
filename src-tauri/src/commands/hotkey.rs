@@ -1,5 +1,6 @@
-// 快捷键命令 — 改键（校验 + 热重绑 + 落库）。
+// 快捷键命令 — 改键（校验 + 热重绑 + 落库）与生效清单。
 
+use serde::Serialize;
 use tauri::{AppHandle, State};
 
 use crate::db::pool::Db;
@@ -7,6 +8,26 @@ use crate::hotkeys;
 use crate::support::error::AppResult;
 
 use super::run_db;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HotkeyBinding {
+    pub action: String,
+    /// 当前生效的键位；空串 = 显式停用
+    pub key: String,
+}
+
+/// 改键界面的事实来源：注册表里**实际生效**的那份（不是用户上次的愿望）。
+#[tauri::command]
+pub async fn hotkey_list(app: AppHandle) -> AppResult<Vec<HotkeyBinding>> {
+    use tauri::Manager;
+    let registry = app.state::<hotkeys::HotkeyRegistry>();
+    Ok(registry
+        .list()
+        .into_iter()
+        .map(|(action, key)| HotkeyBinding { action, key })
+        .collect())
+}
 
 /// 改一条绑定。key 空串 = 停用；失败（被占用/不合法）旧键自动还原，错误码见 hotkeys。
 #[tauri::command]
