@@ -48,7 +48,10 @@ pub enum Action {
     InjectFullClick,
     /// 拖拽转透传：补发一个 right down，让应用进入它错过的按下态
     InjectPress,
-    /// 长按松手：在这一点唤起星环（物理像素）
+    /// 到阈值：星环窗先在按下点亮起，前端画充电弧（§5.4）
+    EmitCharging,
+    /// 长按松手：弧 90ms 淡出，随后在这一点开出整盘
+    EmitUp,
     EmitOpen { x: i32, y: i32 },
 }
 
@@ -98,7 +101,7 @@ impl Machine {
             }
             (Phase::Pressed, Event::TimerFired) => {
                 self.phase = Phase::Armed;
-                vec![]
+                vec![Action::EmitCharging]
             }
             (Phase::Pressed, Event::Move { x, y }) => {
                 self.point = (x, y);
@@ -119,7 +122,7 @@ impl Machine {
             }
             (Phase::Armed, Event::RightUp) => {
                 self.phase = Phase::Idle;
-                vec![Action::EmitOpen {
+                vec![Action::EmitUp, Action::EmitOpen {
                     x: self.point.0,
                     y: self.point.1,
                 }]
@@ -162,14 +165,18 @@ mod tests {
     }
 
     #[test]
-    fn 到阈值只武装不出盘_松手才出盘() {
+    fn 到阈值先亮充电弧_松手先淡出再出盘() {
         let mut machine = Machine::default();
         machine.step(Event::RightDown { x: 10, y: 10 });
-        assert!(machine.step(Event::TimerFired).is_empty());
+        let actions = machine.step(Event::TimerFired);
+        assert!(matches!(actions.as_slice(), &[Action::EmitCharging]));
         assert_eq!(machine.phase, Phase::Armed);
         machine.step(Event::Move { x: 30, y: 40 });
         let actions = machine.step(Event::RightUp);
-        assert!(matches!(actions.as_slice(), &[Action::EmitOpen { x: 30, y: 40 }]));
+        assert!(matches!(
+            actions.as_slice(),
+            &[Action::EmitUp, Action::EmitOpen { x: 30, y: 40 }]
+        ));
     }
 
     #[test]

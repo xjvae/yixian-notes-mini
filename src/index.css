@@ -52,3 +52,138 @@ input,
 textarea {
   outline: none;
 }
+
+/* ─────────────────────────── 星环（radial menu） ───────────────────────────
+ * 亮色磨砂盘（移植自旧实现）：透明窗口里 **不能用 backdrop-filter**——它模糊不到
+ * 桌面，且 Chromium 会把合成层按矩形溢出圆形边框；"磨砂"用浅色径向渐变近似。
+ *
+ * 充电弧（长按判定期的反馈）：绕锚点一圈半径 14px 的弧，从 -90° 在 --ring-ms
+ * （= 此刻真正生效的 hold_ms，由前端内联给）里线性扫满。时长不写死在 keyframes
+ * 里：阈值能在设置窗改，写死的那条迟早和运行时不是一个数。
+ */
+:root {
+  --primary: hsl(155 35% 46%);
+}
+
+:root[data-theme="dark"] {
+  --primary: hsl(155 28% 52%);
+}
+
+.radial-root :focus-visible {
+  outline-color: rgba(29, 35, 41, 0.62);
+}
+
+:root[data-theme="dark"] .radial-root :focus-visible {
+  outline-color: rgba(231, 233, 236, 0.72);
+}
+
+.radial-charging__arc {
+  stroke-dasharray: var(--ring-c);
+  stroke-dashoffset: var(--ring-c);
+  animation: radial-charge var(--ring-ms, 450ms) linear forwards;
+}
+
+@keyframes radial-charge {
+  from {
+    stroke-dashoffset: var(--ring-c);
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+/* 到阈值了但还按着：满环微呼吸，等松手出盘 */
+.radial-charging--full {
+  animation: radial-charge-breathe 1.4s ease-in-out infinite;
+}
+
+@keyframes radial-charge-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+/* 阈值前松手 / 转成拖拽：90ms 淡出，前端随后收窗 */
+.radial-charging--up {
+  animation: radial-charge-out 90ms linear forwards;
+}
+
+@keyframes radial-charge-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+.radial-disc {
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 50% 30%,
+    rgba(255, 255, 255, 0.99) 0%,
+    rgba(255, 255, 255, 0.96) 56%,
+    rgba(244, 246, 243, 0.95) 100%
+  );
+  /* 细描边 + 外缘那一圈更淡的半透明"出光"环 */
+  border: 1px solid rgba(0, 0, 0, 0.07);
+  box-shadow:
+    0 0 0 4px rgba(255, 255, 255, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    0 18px 44px rgba(23, 26, 31, 0.18),
+    0 4px 12px rgba(23, 26, 31, 0.08);
+}
+
+.radial-core {
+  border-radius: 50%;
+  /* 中心核是"白色实心圆 + 1px 描边"，前景必须深色：压浅盘才够 4.5:1 */
+  color: #1d2329;
+  background: radial-gradient(circle at 50% 34%, #fff 0%, #fdfdfc 60%, #f1f3f0 100%);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow:
+    inset 0 1px 0 #fff,
+    0 6px 18px rgba(23, 26, 31, 0.1);
+}
+
+/* 深色盘片的暗 counterpart */
+:root[data-theme="dark"] .radial-disc {
+  background: radial-gradient(
+    circle at 50% 28%,
+    rgba(45, 48, 55, 0.98) 0%,
+    rgba(31, 33, 38, 0.96) 56%,
+    rgba(23, 24, 27, 0.97) 100%
+  );
+  border-color: rgba(255, 255, 255, 0.1);
+  box-shadow:
+    0 0 0 4px rgba(23, 24, 27, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    0 18px 44px rgba(0, 0, 0, 0.5),
+    0 4px 12px rgba(0, 0, 0, 0.42);
+}
+
+:root[data-theme="dark"] .radial-core {
+  color: var(--panel-ink);
+  background: radial-gradient(circle at 50% 34%, #3d414a 0%, #2c2f36 60%, #23262c 100%);
+  border-color: rgba(255, 255, 255, 0.14);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    0 6px 18px rgba(0, 0, 0, 0.5);
+}
+
+/* 减少动态效果：动画全停，但充电弧必须钉成满环——停在起点 = 整条弧都不画，
+   长按反而彻底没反馈 */
+@media (prefers-reduced-motion: reduce) {
+  .radial-root,
+  .radial-root * {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  .radial-charging__arc {
+    stroke-dashoffset: 0;
+  }
+}

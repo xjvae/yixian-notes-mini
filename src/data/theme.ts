@@ -88,6 +88,37 @@ export function themeOf(key: string): NoteTheme {
 
 export const THEME_KEYS: readonly string[] = NOTE_THEMES.map((t) => t.key);
 
+/**
+ * 星环的"墨色"四件套。扇区/标签/提示是 SVG 属性与内联样式，CSS 深色层覆盖不住，
+ * 只能按解析后的方案成对供给（与便签纸色同理）。
+ */
+export const RING_INK: Record<
+  "light" | "dark",
+  {
+    /** 扇区悬停填充 */
+    sectorHover: string;
+    /** 扇区分隔线 / 盘缘描边 */
+    divider: string;
+    /** 节点标签与中央核文字 */
+    label: string;
+    /** 底部操作提示 */
+    hint: string;
+  }
+> = {
+  light: {
+    sectorHover: "rgba(0,0,0,0.04)",
+    divider: "rgba(0,0,0,0.08)",
+    label: "#1d2329",
+    hint: "rgba(29,35,41,0.55)",
+  },
+  dark: {
+    sectorHover: "rgba(255,255,255,0.06)",
+    divider: "rgba(255,255,255,0.10)",
+    label: "#E7E9EC",
+    hint: "rgba(231,233,236,0.62)",
+  },
+};
+
 export interface ThemeColors {
   paper: string;
   accent: string;

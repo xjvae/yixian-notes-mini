@@ -65,3 +65,9 @@ pub fn whitelist() -> Vec<String> {
 pub fn foreground_name() -> Option<String> {
     win_hook::foreground_name()
 }
+
+/// 星环盘驻留状态的唯一账本（钩子回调据此判定"盘外左键=收环"）。
+/// 消费线程在盘亮起时置位；`windows/ring.rs` 的 close 路径清账。
+pub fn set_ring_open(open: bool) {
+    win_hook::set_ring_open(open);
+}

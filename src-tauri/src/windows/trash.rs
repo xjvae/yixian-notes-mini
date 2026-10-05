@@ -22,6 +22,8 @@ pub async fn open(app: &AppHandle) -> AppResult<()> {
         always_on_top: false,
         skip_taskbar: false,
         focused: true,
+        visible: true,
+        show_on_reuse: true,
         init_script: None,
     };
     build_window(app, spec).await.map(|window| {

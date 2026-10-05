@@ -186,6 +186,13 @@ pub fn run() {
                     input::set_whitelist(&raws);
                 }
             }
+            let ring_handle = handle.clone();
+            // 星环预热：先把 WebView 建出来藏着，第一次长按才有即时的充电弧
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = windows::ring::prewarm(&ring_handle).await {
+                    support::log::warn("ring", &format!("星环预热失败：{e}"));
+                }
+            });
             input::spawn(handle);
             Ok(())
         })

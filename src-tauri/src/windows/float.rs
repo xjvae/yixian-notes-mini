@@ -84,6 +84,8 @@ pub async fn open_sticky(app: &AppHandle, db: &Db, id: &str) -> AppResult<()> {
         always_on_top: row.pinned,
         skip_taskbar: true,
         focused: true,
+        visible: true,
+        show_on_reuse: true,
         init_script: Some(format!("window.__STICKY_ID__ = {:?};", id)),
     };
     let window = build_window(app, spec).await?;
@@ -170,6 +172,8 @@ pub async fn open_group_stack(
         always_on_top: true,
         skip_taskbar: true,
         focused: true,
+        visible: true,
+        show_on_reuse: true,
         init_script: Some(init_script),
     };
     let window = build_window(app, spec).await?;

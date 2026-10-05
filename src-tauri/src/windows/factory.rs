@@ -29,15 +29,21 @@ pub struct WindowSpec {
     pub always_on_top: bool,
     pub skip_taskbar: bool,
     pub focused: bool,
+    /// 创建即显示？（星环走 false：先建好/摆好位再由 open 路径显式 show）
+    pub visible: bool,
+    /// 复用已有窗时是否 show + focus（星环走 false：先摆位再显式 show，避免闪在旧位）
+    pub show_on_reuse: bool,
     /// 注入的前端全局脚本（浮窗用它携带数据 id）
     pub init_script: Option<String>,
 }
 
-/// 已存在则复用（show + focus），否则构建。构建完成后必须释放注册表占位。
+/// 已存在则复用（按 spec 决定是否 show + focus），否则构建。构建完成后必须释放注册表占位。
 pub async fn build_window(app: &AppHandle, spec: WindowSpec) -> AppResult<WebviewWindow> {
     if let Some(existing) = app.get_webview_window(&spec.label) {
-        let _ = existing.show();
-        let _ = existing.set_focus();
+        if spec.show_on_reuse {
+            let _ = existing.show();
+            let _ = existing.set_focus();
+        }
         return Ok(existing);
     }
     let registry = app.state::<CreatingRegistry>();
@@ -71,7 +77,8 @@ async fn do_build(app: &AppHandle, spec: WindowSpec) -> AppResult<WebviewWindow>
     .transparent(spec.transparent)
     .always_on_top(spec.always_on_top)
     .skip_taskbar(spec.skip_taskbar)
-    .focused(spec.focused);
+    .focused(spec.focused)
+    .visible(spec.visible);
     if let Some((width, height)) = spec.min_size {
         builder = builder.min_inner_size(width, height);
     }

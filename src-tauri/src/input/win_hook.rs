@@ -35,10 +35,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetForegroundWindow,
     GetMessageW, GetWindowThreadProcessId, HHOOK, HWND_MESSAGE, KillTimer, LLMHF_INJECTED,
-    WM_MOUSEMOVE,
     MSG, MSLLHOOKSTRUCT, PostThreadMessageW, RegisterClassExW, SetTimer,
     SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, WH_MOUSE_LL, WINDOW_STYLE,
-    WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW,
+    WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_TIMER,
+    WNDCLASSEXW,
 };
 
 use super::allowlist;
@@ -61,29 +61,62 @@ static MACHINE: Mutex<Machine> = Mutex::new(Machine::new());
 static ALLOWED: AtomicBool = AtomicBool::new(false);
 /// 最近一次采样到的前台进程基名（hook_status 给设置界面的"上一个前台程序"）
 static FOREGROUND: Mutex<Option<String>> = Mutex::new(None);
-/// 出盘事件通道：回调 try_send，消费线程转投星环
-type OpenSender = SyncSender<(i32, i32)>;
+/// 出盘链路上的事件（回调 try_send，消费线程转投窗口/前端广播）
+pub enum RingEvent {
+    /// 在这一点开出整盘（物理像素）
+    Open { x: i32, y: i32 },
+    /// 到阈值：星环窗亮起，前端画充电弧（带上此刻真正生效的阈值）
+    Charging { hold_ms: u32 },
+    /// 松手：弧淡出，整盘随后开
+    Up,
+    /// 盘驻留期间盘外左键按下：前端收环，这次点击原样放行
+    Dismiss,
+}
+type OpenSender = SyncSender<RingEvent>;
 static OPEN_SENDER: OnceLock<Mutex<Option<OpenSender>>> = OnceLock::new();
+/// 星环盘是否驻留在桌面上（消费线程置位，close_ring_window 清账；回调只读）
+static RING_OPEN: AtomicBool = AtomicBool::new(false);
+
+pub fn set_ring_open(open: bool) {
+    RING_OPEN.store(open, Ordering::SeqCst);
+}
 
 // —— 装配 ——
 
 pub fn spawn(app: tauri::AppHandle) {
-    let (sender, receiver) = sync_channel::<(i32, i32)>(8);
+    let (sender, receiver) = sync_channel::<RingEvent>(8);
     OPEN_SENDER
         .set(Mutex::new(Some(sender)))
         .expect("input 只装配一次");
 
-    // 消费线程：出盘事件 → 唤起星环（ IPC/窗口操作绝不进回调）
+    // 消费线程：开窗/广播（IPC/窗口操作绝不进回调）
     {
         let app = app.clone();
         std::thread::spawn(move || {
-            for (x, y) in receiver {
-                let app = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    if let Err(e) = crate::windows::ring::open_at(&app, x, y).await {
-                        log::warn("input", &format!("唤起星环失败：{e}"));
+            use tauri::Emitter;
+            for event in receiver {
+                match event {
+                    RingEvent::Open { x, y } => {
+                        RING_OPEN.store(true, Ordering::SeqCst);
+                        let app = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(e) = crate::windows::ring::open_at(&app, x, y).await {
+                                log::warn("input", &format!("唤起星环失败：{e}"));
+                            }
+                            // 盘已亮：前端把充电弧换成整盘（§5.4 的交接点）
+                            let _ = app.emit("ring:open", ());
+                        });
                     }
-                });
+                    RingEvent::Charging { hold_ms } => {
+                        let _ = app.emit("ring:charging", hold_ms);
+                    }
+                    RingEvent::Up => {
+                        let _ = app.emit("ring:up", ());
+                    }
+                    RingEvent::Dismiss => {
+                        let _ = app.emit("ring:dismiss", ());
+                    }
+                }
             }
         });
     }
@@ -186,7 +219,7 @@ fn pump_loop() {
         while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
             if msg.message == WM_TIMER && msg.wParam.0 == TIMER_ID {
                 // 阈值到点：与钩子回调共用同一把 try_lock（同线程，锁必然空闲）
-                step_and_execute(Event::TimerFired, hwnd);
+                step_and_execute(Event::TimerFired);
                 continue;
             }
             let _ = TranslateMessage(&msg);
@@ -239,6 +272,13 @@ unsafe extern "system" fn hook_proc(ncode: i32, wparam: WPARAM, lparam: LPARAM) 
             return CallNextHookEx(None, ncode, wparam, lparam);
         }
 
+        // 盘驻留期间的盘外左键：发 Dismiss 让前端收环，这次点击照常放行。
+        // （盘内点击进的是星环自己的窗，到不了这里。）
+        if msg == WM_LBUTTONDOWN && RING_OPEN.load(Ordering::Relaxed) {
+            notify(RingEvent::Dismiss);
+            return CallNextHookEx(None, ncode, wparam, lparam);
+        }
+
         // 新手势的准入判定（只在 down 时做；采样线程的结论已经是算好的原子量）
         if is_right_down && (is_paused() || ALLOWED.load(Ordering::Relaxed)) {
             return CallNextHookEx(None, ncode, wparam, lparam);
@@ -283,14 +323,24 @@ unsafe extern "system" fn hook_proc(ncode: i32, wparam: WPARAM, lparam: LPARAM) 
 }
 
 /// 泵线程（WM_TIMER）与回调共用的执行入口
-fn step_and_execute(event: Event, hwnd: HWND) {
+fn step_and_execute(event: Event) {
     let Ok(mut machine) = MACHINE.try_lock() else {
         return;
     };
     let actions = machine.step(event);
     drop(machine);
     execute(&actions);
-    let _ = hwnd;
+}
+
+fn notify(event: RingEvent) {
+    if let Some(sender) = OPEN_SENDER
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .as_ref()
+    {
+        let _ = sender.try_send(event);
+    }
 }
 
 fn execute(actions: &[Action]) {
@@ -310,16 +360,9 @@ fn execute(actions: &[Action]) {
             Action::InjectPress => {
                 send_input(&[MOUSEEVENTF_RIGHTDOWN.0]);
             }
-            Action::EmitOpen { x, y } => {
-                if let Some(sender) = OPEN_SENDER
-                    .get_or_init(|| Mutex::new(None))
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .as_ref()
-                {
-                    let _ = sender.try_send((*x, *y));
-                }
-            }
+            Action::EmitCharging => notify(RingEvent::Charging { hold_ms: hold_ms() }),
+            Action::EmitUp => notify(RingEvent::Up),
+            Action::EmitOpen { x, y } => notify(RingEvent::Open { x: *x, y: *y }),
         }
     }
 }
