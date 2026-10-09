@@ -44,6 +44,8 @@ export interface StickyNote {
   timeline: TimelineEntry[];
   tags: string[];
   theme: string;
+  /** 侧边色块签上的自定义图标 key（注册表在 data/note-icons.ts）；null = 用类型推出来的那个 */
+  icon: string | null;
   /** 窗口置顶（老用户口中"钉住"） */
   pinned: boolean;
   /** 是否作为浮窗常驻；deleted=1 时无意义 */
@@ -68,6 +70,13 @@ export interface StickyNote {
   /** 贴边吸附态：true 时窗体以 20px 细丝贴在 dockEdge 一侧 */
   docked: boolean;
   dockEdge: DockEdge | null;
+  /**
+   * 随内容自动长高，**三态**：null = 没表过态，跟全局那个开关（settings 的
+   * `sticky.auto_size`）走；true / false = 这张强制自动 / 强制固定。
+   * 压成布尔就分不开"跟全局走"与"我就是要固定"——那是这个模式唯一的全局出口。
+   * 开着自动时**不往 width/height 写**，手拉的固定值原样躺在行里，关掉那一刻回得去。
+   */
+  autoSize: boolean | null;
   /** 由 Rust 写入侧权威生成（epoch ms），前端只读 */
   createdAt: number;
   updatedAt: number;
@@ -85,6 +94,9 @@ export interface StickyGroup {
   name: string;
   color: string | null;
   collapsed: boolean;
+  /** 这一叠贴在边上（20px 细丝）。与单窗那两列同意义（迁移 0003 / 0008） */
+  docked: boolean;
+  dockEdge: DockEdge | null;
   /** 叠窗几何，逻辑像素；null = 未摆过位（开窗路径级联落点） */
   x: number | null;
   y: number | null;
@@ -138,10 +150,51 @@ export interface PrivateStatus {
   unlocked: boolean;
 }
 
-/** 全局快捷键当前生效绑定。key 空串 = 显式停用 */
+/**
+ * 全局快捷键当前生效绑定。key 空串 = 显式停用。
+ * `bound` = 系统有没有真的收下这个键；false 表示**按下去什么都不发生**
+ * （被别的程序占着），界面要把它和"已停用"分开说。
+ */
 export interface HotkeyBinding {
   action: string;
   key: string;
+  bound: boolean;
+}
+
+/**
+ * 一张图存进去之后的元数据（media_save 的返回）。
+ * 正文里那句 `![…](media://id)` 只用到 id，宽高是给渲染层按比例占位的。
+ */
+export interface MediaMeta {
+  id: string;
+  noteId: string;
+  mime: string;
+  width: number;
+  height: number;
+  /** true = 库里这一行是密文（私密便签的图，未解锁读不出来） */
+  enc: boolean;
+}
+
+/** 一张图的字节（media_get 的返回；命令本身可以是 null = 库里没这行） */
+export interface MediaBytes {
+  mime: string;
+  dataBase64: string;
+}
+
+/**
+ * 桌面上一扇浮窗的矩形（**物理**像素，与 moved 事件同一套坐标，拿来就能比）。
+ * 拖拽进组的命中判定用：系统拖着窗走的时候前端收不到 pointermove，
+ * "我压在谁身上"只能自己算，别人那份矩形就得一次拿全。
+ */
+export interface FloatFrame {
+  label: string;
+  kind: "sticky" | "stack";
+  /** 单窗 = 便签 id，叠窗 = 组 id */
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 /** 右键劫持运行态。foreground = 最近采样的前台进程基名；null = 读不到（提权程序等） */
@@ -149,6 +202,8 @@ export interface HookStatus {
   paused: boolean;
   holdMs: number;
   whitelist: string[];
+  /** 长按引导期的充电弧。关掉 = 长按过程中零反馈，松手直接出盘 */
+  charging: boolean;
   foreground: string | null;
 }
 
@@ -158,10 +213,35 @@ export const PRIVATE_CHANGED = "store:private-changed";
 /** 让某扇叠窗翻到指定那张（点搜索结果 / 归组 / 回收站恢复；窗已在了才用得上） */
 export const STICKY_REVEAL = "sticky:reveal";
 
+/** "就是这一张"：纸边闪一圈（提醒卡点开来用的，窗本来就开着时唯一的可见回应） */
+export const STICKY_PING = "sticky:ping";
+
+/** 闪光落点。广播给所有窗，握着这张便签的那扇自己认领 */
+export interface StickyPingEvent {
+  stickyId: string;
+}
+
 /** 叠窗落点。广播给所有窗，叠窗按 groupId 认领（与 db:changed 同一口径） */
 export interface StickyRevealEvent {
   groupId: string;
   stickyId: string;
+}
+
+/** 到点提醒换内容的事件名（提醒卡已经在那儿了，第二条来了就把它换成新的） */
+export const REMINDER_SHOW = "reminder:show";
+
+/**
+ * 提醒卡上要写的东西（`windows/card.rs` 的 Card 镜像）。
+ * `title`/`text` 在 Rust 那边已经按私密口径洗过——私密的换成中性文案，
+ * 所以这里**不许**再拿它去查那张便签（一查就把私密内容画到了一张不锁的卡上）。
+ */
+export interface ReminderCardPayload {
+  title: string;
+  text: string;
+  stickyId: string;
+  groupId: string | null;
+  /** 那张便签的纸色键（`data/theme.ts` 里那一个）。卡跟着它画 */
+  theme: string;
 }
 
 /** 窗口注入的全局名（factory.rs 的初始化脚本写入）——跨语言契约 */

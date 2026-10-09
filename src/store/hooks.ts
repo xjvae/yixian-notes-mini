@@ -17,7 +17,7 @@ export function useNote(id: string | null): StickyNote | null {
   return useSyncExternalStore(subscribe, () => (id === null ? null : getNote(id)));
 }
 
-/** 全量列表订阅（回收站/搜索/将来的一切列表视图） */
+/** 全量列表订阅（回收站与搜索都用它，叠窗的成员也从这里算） */
 export function useNotes(): readonly StickyNote[] {
   return useSyncExternalStore(subscribe, getNotesSnapshot);
 }

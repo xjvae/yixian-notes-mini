@@ -14,6 +14,13 @@ const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 pub fn purge_expired(db: &Db, retention_days: i64, now: i64) -> AppResult<i64> {
     let cutoff = now - retention_days * DAY_MS;
     let conn = db.lock();
+    // 图先走。这条批量清算不枚举 id（一句 DELETE 完事），所以 media 得用**同一个条件**
+    // 自己挑一遍：漏了就是每 30 天留一堆没人再看得见的孤儿字节
+    conn.execute(
+        "DELETE FROM media WHERE note_id IN \
+         (SELECT id FROM stickies WHERE deleted = 1 AND deleted_at IS NOT NULL AND deleted_at < ?1)",
+        [cutoff],
+    )?;
     let changed = conn.execute(
         "DELETE FROM stickies WHERE deleted = 1 AND deleted_at IS NOT NULL AND deleted_at < ?1",
         [cutoff],
@@ -36,22 +43,27 @@ pub fn restore(db: &Db, id: &str) -> AppResult<bool> {
 mod tests {
     use super::*;
     use crate::db::models::StickyInput;
-    use crate::db::query::sticky;
+    use crate::db::query::{media, sticky};
     use rusqlite::Connection;
 
     fn db_with_schema() -> Db {
         let db = Db::from_connection(Connection::open_in_memory().expect("内存库"));
-        // 与生产同序：全量迁移
-        db.lock()
-            .execute_batch(include_str!("../../../migrations/0001_init.sql"))
-            .expect("建表");
-        db.lock()
-            .execute_batch(include_str!("../../../migrations/0002_timeline.sql"))
-            .expect("补列");
-        db.lock()
-            .execute_batch(include_str!("../../../migrations/0003_dock.sql"))
-            .expect("补贴边列");
+        // 与生产同一条路：跑 migrate::run，别再手抄迁移清单
+        crate::db::migrate::run(&db).expect("建表");
         db
+    }
+
+    fn picture(id: &str, note_id: &str) -> media::MediaRow {
+        media::MediaRow {
+            id: id.to_string(),
+            note_id: note_id.to_string(),
+            mime: "image/png".to_string(),
+            bytes: vec![1, 2, 3, 4],
+            enc: false,
+            width: 8,
+            height: 8,
+            created_at: 1,
+        }
     }
 
     fn input(id: &str) -> StickyInput {
@@ -79,6 +91,8 @@ mod tests {
             deleted: false,
             docked: false,
             dock_edge: None,
+            icon: None,
+            auto_size: None,
         }
     }
 
@@ -92,12 +106,16 @@ mod tests {
             .expect("拨时钟");
     }
 
+    /// 到期的行被清时**图要跟着清**。这条批量清算不枚举 id（一句 DELETE 完事），
+    /// 所以 media 用同一个条件的子查询自己挑一遍；没到期的那张的图必须原样留着
     #[test]
     fn 到期的行被清_没到期的留着_未删的不动() {
         let db = db_with_schema();
         sticky::upsert(&db, input("old")).expect("写 old");
         sticky::upsert(&db, input("fresh")).expect("写 fresh");
         sticky::upsert(&db, input("alive")).expect("写 alive");
+        media::save(&db, &picture("m-old", "old")).expect("old 的图");
+        media::save(&db, &picture("m-fresh", "fresh")).expect("fresh 的图");
         let now = sticky::now_ms();
         assert!(sticky::delete(&db, "old", false).expect("软删"));
         assert!(sticky::delete(&db, "fresh", false).expect("软删"));
@@ -108,6 +126,16 @@ mod tests {
         assert!(sticky::get(&db, "old").expect("读").is_none(), "到期的行真没了");
         assert!(sticky::get(&db, "fresh").expect("读").is_some());
         assert!(sticky::get(&db, "alive").expect("读").is_some());
+        assert_eq!(
+            media::count_for_note(&db, "old").expect("数"),
+            0,
+            "到期清算要带走图，不然就是永久孤儿字节"
+        );
+        assert_eq!(
+            media::count_for_note(&db, "fresh").expect("数"),
+            1,
+            "没到期的那张的图不许跟着没"
+        );
     }
 
     #[test]

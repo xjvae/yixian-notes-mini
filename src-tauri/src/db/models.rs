@@ -22,6 +22,9 @@ pub struct GroupRow {
     pub name: String,
     pub color: Option<String>,
     pub collapsed: bool,
+    /** 这一叠贴在边上（20px 细丝）。与单窗那两列同意义，见迁移 0003 / 0008 */
+    pub docked: bool,
+    pub dock_edge: Option<String>,
     pub x: Option<i64>,
     pub y: Option<i64>,
     pub width: Option<i64>,
@@ -68,6 +71,11 @@ pub struct StickyRow {
     pub deleted_at: Option<i64>,
     pub docked: bool,
     pub dock_edge: Option<String>,
+    /// 侧签的自定义图标 key（前端注册表里的短名，如 "star"）；None = 用类型推出来的那个
+    pub icon: Option<String>,
+    /// 随内容自动长高这件事，这张便签表过态没有：None = 跟全局开关走，
+    /// Some(true)/Some(false) = 这张强制自动/强制固定。三态压成布尔就丢了"跟全局走"
+    pub auto_size: Option<bool>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -100,4 +108,8 @@ pub struct StickyInput {
     pub deleted: bool,
     pub docked: bool,
     pub dock_edge: Option<String>,
+    /// 同 `StickyRow::icon`
+    pub icon: Option<String>,
+    /// 同 `StickyRow::auto_size`（None = 不表态，跟全局走）
+    pub auto_size: Option<bool>,
 }

@@ -13,6 +13,17 @@ function asBool(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
 }
 
+/**
+ * 三态布尔（`autoSize` 那种"没表过态"的列）：只有真/假算表过态，1/0 也认
+ * （库里那列是 INTEGER，手改过或从别的形状来都会给数字）。
+ * 其余一律 null = 跟全局走——脏值不许被猜成 true 或 false，那等于替用户改了这张的模式。
+ */
+function asTriBool(value: unknown): boolean | null {
+  if (value === true || value === 1) return true;
+  if (value === false || value === 0) return false;
+  return null;
+}
+
 function asIntOrNull(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? Math.round(value) : null;
 }
@@ -76,6 +87,12 @@ export function normalizeSticky(row: StickyNote): StickyNote | null {
     timeline: normalizeTimeline(row.timeline),
     tags: normalizeTags(row.tags),
     theme,
+    // 图标只在这里管形状（长度、类型），**认不认这个 key 由渲染那边兜底**：
+    // 校验层不引 lucide，认不出的 key 在签上自动回落成类型图标，画不出空白
+    icon:
+      typeof row.icon === "string" && row.icon.length > 0 && row.icon.length <= 32
+        ? row.icon
+        : null,
     pinned: asBool(row.pinned, true),
     floating: asBool(row.floating, true),
     collapsed: asBool(row.collapsed, false),
@@ -92,6 +109,7 @@ export function normalizeSticky(row: StickyNote): StickyNote | null {
     deletedAt: asIntOrNull(row.deletedAt),
     docked: asBool(row.docked, false),
     dockEdge: isDockEdge(row.dockEdge) ? row.dockEdge : null,
+    autoSize: asTriBool(row.autoSize),
     createdAt: typeof row.createdAt === "number" ? row.createdAt : 0,
     updatedAt: typeof row.updatedAt === "number" ? row.updatedAt : 0,
   };

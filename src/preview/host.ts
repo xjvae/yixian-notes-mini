@@ -9,7 +9,7 @@
 // 多显示器/DPI、WH_MOUSE_LL。摆位用右侧面板的数值框注入 moved/resized，
 // 够把"几何合流 + 最小尺寸纠偏"这条链路跑通。
 
-import type { StickyNote } from "@/platform/contracts";
+import type { FloatFrame, StickyNote } from "@/platform/contracts";
 import {
   FakeDb,
   PreviewError,
@@ -43,8 +43,28 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-/** 开窗时定形：入口 html + 预览标记 + label + 身份 + 初始几何（+ 叠窗的落点那张） */
-function frameSrc(spec: Omit<FrameSpec, "src" | "hidden">, focus: string | null): string {
+/** "这一档没有原生下限"（收起成标题栏、贴边细丝那两档）。0×0 = 不夹，与别处同一种写法 */
+const NO_MIN = { width: 0, height: 0 };
+
+/**
+ * 出生尺寸过一遍原生下限——builder 的 `min_inner_size` 就是当场夹的。
+ * 预览台以前不夹这一刀，于是"挂着 220×200 去建 62 高的栏"这种错在这儿演不出来，
+ * 只能等真机报（`float::mode_geometry` 那条就是那次报出来的）。
+ */
+function birthRect(rect: Rect, min: { width: number; height: number }): Rect {
+  return {
+    ...rect,
+    width: Math.max(rect.width, min.width),
+    height: Math.max(rect.height, min.height),
+  };
+}
+
+/** 开窗时定形：入口 html + 预览标记 + label + 身份 + 初始几何（+ 叠窗的落点那张、收起旗） */
+function frameSrc(
+  spec: Omit<FrameSpec, "src" | "hidden">,
+  focus: string | null,
+  collapsed: boolean,
+): string {
   const search = new URLSearchParams({
     preview: "1",
     label: spec.label,
@@ -59,6 +79,9 @@ function frameSrc(spec: Omit<FrameSpec, "src" | "hidden">, focus: string | null)
   if (spec.entityId !== null && spec.label.startsWith(GROUP_PREFIX)) {
     search.set("groupId", spec.entityId);
     if (focus !== null) search.set("focus", focus);
+    // 与 Rust 的 initialization_script 同一条注入（float.rs 把 collapsed 写成全局）：
+    // 单窗不需要它——那边的 collapsed 住在便签行里，挂载时已经在 store 里了
+    if (collapsed) search.set("collapsed", "1");
   }
   return `/${spec.entry}?${search.toString()}`;
 }
@@ -70,6 +93,11 @@ export class PreviewHost {
   /** 每一笔结构或几何变化都涨一格：订阅面只认这个数（认 frames.length 会漏掉改摆位/改尺寸） */
   private version = 0;
   private readonly origin = window.location.origin;
+
+  constructor() {
+    // 假核答不了"桌面上有哪几扇浮窗在哪"——矩形只在宿主手里，挂过去
+    this.db.floatsProvider = () => this.floatFrames();
+  }
 
   get snap(): number {
     return this.version;
@@ -86,6 +114,30 @@ export class PreviewHost {
     return [...this.frames.values()].map((handle) => handle.spec);
   }
 
+  /**
+   * 与 commands/window.rs::float_frames 同口径：只给**可见**的浮窗与叠窗，
+   * 面板窗和隐藏的那几扇不在表里（拖到它们身上没有意义）。
+   * 预览台是 1:1 的画布坐标，所以逻辑像素就是 Rust 那份"物理像素"的等价物。
+   */
+  floatFrames(): FloatFrame[] {
+    const out: FloatFrame[] = [];
+    for (const handle of this.frames.values()) {
+      const { label, kind, entityId, rect, hidden } = handle.spec;
+      if (hidden || entityId === null) continue;
+      if (kind !== "sticky" && kind !== "stack") continue;
+      out.push({
+        label,
+        kind,
+        id: entityId,
+        x: Math.round(rect.x),
+        y: Math.round(rect.y),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      });
+    }
+    return out;
+  }
+
   attach(element: HTMLIFrameElement | null, label: string): void {
     const handle = this.frames.get(label);
     if (handle) handle.element = element;
@@ -98,7 +150,7 @@ export class PreviewHost {
     this.notify();
   }
 
-  /** 开局就把要看的东西摆上：一张单窗 + 一叠三张 + 回收站 */
+  /** 开局就把要看的东西摆上：一张单窗 + 一叠三张（面板窗要按上面那排钮开） */
   seedOpen(): void {
     this.openSticky("s-text");
     this.openStack("g-demo", null);
@@ -128,7 +180,10 @@ export class PreviewHost {
       width: row.width ?? spec.size.width,
       height: row.height ?? spec.size.height,
     };
-    const rect = row.collapsed
+    // 收起那一档**连原生下限一起摘**（与 `float::mode_geometry` 同一条）：留着 220×200，
+    // 那条 62 的栏会被当场夹回 200 —— 作者报的"收起态退出重开，尺寸不一致"就是它。
+    const min = row.collapsed ? NO_MIN : spec.min;
+    const shaped = row.collapsed
       ? { ...base, width: Math.min(base.width, BAR_MAX_WIDTH), height: BAR_HEIGHT }
       : base;
     this.add({
@@ -136,8 +191,8 @@ export class PreviewHost {
       kind: "sticky",
       entityId: id,
       entry: spec.entry,
-      rect,
-      min: spec.min,
+      rect: birthRect(shaped, min),
+      min,
       title: spec.title,
     });
   }
@@ -169,22 +224,30 @@ export class PreviewHost {
       l.startsWith(FLOAT_PREFIX),
     ).length;
     const cascade = cascadePosition(floats);
+    const base: Rect = {
+      x: group.x ?? cascade.x,
+      y: group.y ?? cascade.y,
+      width: group.width ?? spec.size.width,
+      height: group.height ?? spec.size.height,
+    };
+    // 与 float.rs::open_group_stack 同口径：收起态出生就是那条 62 高的栏、宽夹到 360，
+    // 而且**连原生下限一起摘**（见 openSticky 那条注释）
+    const min = group.collapsed ? NO_MIN : spec.min;
+    const shaped = group.collapsed
+      ? { ...base, width: Math.min(base.width, BAR_MAX_WIDTH), height: BAR_HEIGHT }
+      : base;
     this.add(
       {
         label,
         kind: "stack",
         entityId: gid,
         entry: spec.entry,
-        rect: {
-          x: group.x ?? cascade.x,
-          y: group.y ?? cascade.y,
-          width: group.width ?? spec.size.width,
-          height: group.height ?? spec.size.height,
-        },
-        min: spec.min,
+        rect: birthRect(shaped, min),
+        min,
         title: spec.title,
       },
       focus,
+      group.collapsed,
     );
   }
 
@@ -217,9 +280,10 @@ export class PreviewHost {
   private add(
     spec: Omit<FrameSpec, "src" | "hidden">,
     focus: string | null = null,
+    collapsed = false,
   ): void {
     this.frames.set(spec.label, {
-      spec: { ...spec, hidden: false, src: frameSrc(spec, focus) },
+      spec: { ...spec, hidden: false, src: frameSrc(spec, focus, collapsed) },
       element: null,
     });
     this.notify();

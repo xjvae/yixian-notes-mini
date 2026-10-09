@@ -1,15 +1,17 @@
 {
   "identifier": "main",
-  "description": "全窗口基线能力：事件、置顶、拖动、收起/恢复用的尺寸与位置。随各窗落地按 label 收窄到最小集",
+  "description": "全窗口基线能力：事件、置顶、拖动、收起/贴边/提醒卡用的尺寸与位置。当前是一份所有窗共用的表（windows 为 *）——原计划'随各窗落地按 label 收窄'没做，别再当已做的事读",
   "windows": ["*"],
   "permissions": [
     "core:default",
     "core:window:allow-set-always-on-top",
     "core:window:allow-start-dragging",
     "core:window:allow-set-size",
+    "core:window:allow-set-min-size",
     "core:window:allow-set-position",
     "core:window:allow-outer-position",
     "core:window:allow-scale-factor",
-    "core:window:allow-inner-size"
+    "core:window:allow-inner-size",
+    "opener:allow-open-url"
   ]
 }

@@ -46,6 +46,7 @@ export function readPreviewContext(): {
   const stickyId = search.get("stickyId");
   const groupId = search.get("groupId");
   const focus = search.get("focus");
+  const collapsed = search.get("collapsed") === "1";
   // 注入全局与 Rust 的 initialization_script 同形（float.rs 的跨语言契约）
   if (stickyId !== null) {
     window.__STICKY_ID__ = stickyId;
@@ -55,6 +56,7 @@ export function readPreviewContext(): {
     window.__STICKY_GROUP_ID__ = groupId;
     delete window.__STICKY_ID__;
     if (focus !== null) window.__STICKY_FOCUS_ID__ = focus;
+    window.__STICKY_COLLAPSED__ = collapsed;
   }
   return {
     label,
@@ -135,6 +137,27 @@ export function installPreviewBridge(): void {
       }, 4000);
     });
 
+  /**
+   * 替身窗的"原生下限"。真侧 float.rs 给浮窗设了 min_size，`setSize` 会被系统夹住——
+   * 贴边细丝（20×20）比它小得多，不撤下限就永远摆不成。这里照同一条规矩夹，
+   * 预览台才不会把"真机上一看就露馅"的差异演成正常。
+   */
+  let minSize: { width: number; height: number } | null = null;
+
+  /**
+   * 过一遍"原生下限"。程序改尺寸在真机上一定被系统夹，所以**每一条**改尺寸的路都过这一关：
+   * 之前只有 `setSize` 夹、`resizeKeepingPosition`（收起/恢复走的那条）不夹，
+   * 于是"忘了撤 220×200 就去缩 62 高的栏"这种错在预览台里看着是好的，真机才露馅。
+   */
+  const clampToMin = <T extends { width: number; height: number }>(size: T): T =>
+    minSize === null
+      ? size
+      : {
+          ...size,
+          width: Math.max(size.width, minSize.width),
+          height: Math.max(size.height, minSize.height),
+        };
+
   /** 替身窗对象：只给 app 用到的那几个方法，其余抛出明示 */
   const fakeWindow = {
     label: context.label,
@@ -143,14 +166,12 @@ export function installPreviewBridge(): void {
       Promise.resolve({ x: rect.x, y: rect.y }),
     innerSize: (): Promise<{ width: number; height: number }> =>
       Promise.resolve({ width: rect.width, height: rect.height }),
+    setMinSize: (size: { width: number; height: number } | null): Promise<void> => {
+      minSize = size;
+      return Promise.resolve();
+    },
     setSize: (size: { width: number; height: number }): Promise<void> => {
-      toParent({
-        t: "winop",
-        op: "resize",
-        label: context.label,
-        width: size.width,
-        height: size.height,
-      });
+      toParent({ t: "winop", op: "resize", label: context.label, ...clampToMin(size) });
       return Promise.resolve();
     },
     setPosition: (position: { x: number; y: number }): Promise<void> => {
@@ -165,6 +186,12 @@ export function installPreviewBridge(): void {
     },
     // 预览台没有真实层级：记下就算（置顶是否真生效归 M5 真机清单）
     setAlwaysOnTop: (): Promise<void> => Promise.resolve(),
+    /**
+     * 替身窗不会被最大化（真机上双击 drag region 会，见 use-dock-snap 里那条挡贴边的判据）。
+     * 给个 `false` 是让那条读得到答案，而不是走到"读不到就不贴边"的分支——
+     * 否则预览台里贴边整条路都验不了。
+     */
+    isMaximized: (): Promise<boolean> => Promise.resolve(false),
     onMoved: (
       handler: (event: { payload: { x: number; y: number } }) => void,
     ): Promise<() => void> => {
@@ -205,7 +232,13 @@ export function installPreviewBridge(): void {
       });
     },
     resizeKeepingPosition: (width: number, height: number): Promise<void> => {
-      toParent({ t: "winop", op: "resize", label: context.label, width, height });
+      // 真机上这条路最终走 `setSize`，所以同样过下限这一关（见 clampToMin 顶注）
+      toParent({
+        t: "winop",
+        op: "resize",
+        label: context.label,
+        ...clampToMin({ width, height }),
+      });
       return Promise.resolve();
     },
     setWindowFrame: (

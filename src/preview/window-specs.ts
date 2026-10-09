@@ -2,6 +2,7 @@
 //   float.rs   DEFAULT_SIZE 320×300 / MIN_SIZE 220×200 / BAR_HEIGHT 62 / BAR_MAX_WIDTH 360
 //   search.rs  480×420（min 380×340）· trash.rs 440×560（min 360×420）
 //   settings.rs 560×480（min 480×420）· unlock.rs 420×470
+//   ring.rs    RING_SIZE 360×360（正方形，ring.rs 里有一条自 assert 钉着）
 // url 与 vite.config.ts 的 rollupOptions.input 同表（跨语言契约那条纪律在这里同样成立）。
 
 export type FrameKind =
@@ -89,8 +90,8 @@ const SIZE: Record<
     title: "口令",
   },
   ring: {
-    // 与 ring.rs 的 RING_SIZE 同值。真机每次开在光标处，预览台摆在画布左上
-    size: { width: 420, height: 420 },
+    // 与 ring.rs 的 RING_SIZE 同值（360×360）。真机每次开在光标处，预览台摆在画布左上
+    size: { width: 360, height: 360 },
     min: { width: 0, height: 0 },
     entry: "ring.html",
     title: "星环",

@@ -36,6 +36,7 @@ export function createDefaultSticky(id: string, now: number): StickyNote {
     timeline: [],
     tags: [],
     theme: THEME_KEYS[0],
+    icon: null,
     pinned: true,
     floating: true,
     collapsed: false,
@@ -52,6 +53,8 @@ export function createDefaultSticky(id: string, now: number): StickyNote {
     deletedAt: null,
     docked: false,
     dockEdge: null,
+    // 新签不表太态：跟着全局那个开关走（默认关，所以新建的签照旧是手拉的固定尺寸）
+    autoSize: null,
     createdAt: now,
     updatedAt: now,
   };

@@ -1,4 +1,5 @@
-// frames — 面板窗（搜索/回收站/设置）的位置尺寸记忆。
+// frames — 面板窗（搜索/回收站/设置）**与叠窗**的位置尺寸记忆（谁在名单里看 `is_tracked`：
+// 单窗不吃这一套，它的摆位记在便签行里）。
 //
 // 拖动/缩放事件是连发的，一事件一写等于拿 SQLite 当记事本：合流 600ms——
 // 静默这么久才落一笔，pending 去重保证拖动期间至多一个落笔任务在飞。
@@ -74,6 +75,42 @@ pub fn track(app: &AppHandle, label: &str) {
             size.height as i64,
         );
     });
+}
+
+/// 建窗**之前**就能定下来的出生位置与尺寸（逻辑像素）。
+///
+/// 为什么要有这一份：`apply_saved` 是建完之后才把窗搬回记住的地方，而那之间窗已经
+/// 可见了——于是"先在系统默认位置闪一阵，再跳到记录的位置"。builder 只吃逻辑像素，
+/// `window_state` 存的是物理像素，所以这里按**那块屏自己的**缩放换算（屏表由采样线程
+/// 缓存，见 `windows/monitor.rs`）。
+///
+/// 换算不是绝对精确（屏表还没建立的那头一两秒按 1:1 猜），因此 `apply_saved` 照旧
+/// 在建完后用物理值再纠一次：两者一致时那一写是空操作，不一致时最坏也就是今天的表现。
+pub fn saved_placement(app: &AppHandle, label: &str) -> Option<((f64, f64), (f64, f64))> {
+    let db = app.try_state::<Db>();
+    let (x, y, width, height) = window_state::get(db?.inner(), label)
+        .ok()
+        .flatten()
+        .filter(|&(_, _, w, h)| w > 0 && h > 0)?;
+    let scale = crate::windows::monitor::at_physical(x, y)
+        .map(|screen| screen.scale)
+        .unwrap_or(1.0);
+    Some((
+        (x as f64 / scale, y as f64 / scale),
+        (width as f64 / scale, height as f64 / scale),
+    ))
+}
+
+/// 出生几何的调用点写法：记住过就用那份，没记过用默认尺寸、位置交给系统。
+pub fn placement_or(
+    app: &AppHandle,
+    label: &str,
+    default_size: (f64, f64),
+) -> (Option<(f64, f64)>, (f64, f64)) {
+    match saved_placement(app, label) {
+        Some((position, size)) => (Some(position), size),
+        None => (None, default_size),
+    }
 }
 
 /// 开窗后把记住的位置尺寸原样放回（物理像素往返，同屏精确）。

@@ -9,7 +9,7 @@ import { useSyncExternalStore } from "react";
 import { listen } from "@/platform/bridge";
 import { privateStatus } from "@/platform/commands";
 import { PRIVATE_CHANGED } from "@/platform/contracts";
-import type { PrivateStatus } from "@/platform/contracts";
+import type { PrivateStatus, StickyNote } from "@/platform/contracts";
 import { logger } from "@/platform/logger";
 
 const SCOPE = "private-state";
@@ -83,4 +83,16 @@ function getVersion(): number {
 export function usePrivateState(): PrivateLayerState {
   useSyncExternalStore(subscribe, getVersion);
   return state;
+}
+
+/**
+ * 遮罩态的唯一口径：私密 且（没配过 或 没解锁）。真身不在内存里 ——
+ * 标题、正文、标签，以及侧签上那个用户自己挑的图标，都算泄露面，所以谁要画遮罩
+ * 都问这一处，不许在视图里各写一遍 `private && !unlocked`。
+ */
+export function isMasked(
+  note: Pick<StickyNote, "private">,
+  priv: PrivateLayerState,
+): boolean {
+  return note.private && (!priv.active || !priv.unlocked);
 }

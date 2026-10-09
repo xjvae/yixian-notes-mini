@@ -3,8 +3,12 @@
 
 import type {
   Bootstrap,
+  DockEdge,
+  FloatFrame,
   HookStatus,
   HotkeyBinding,
+  MediaBytes,
+  MediaMeta,
   PrivateStatus,
   SearchHit,
   StickyGroup,
@@ -49,6 +53,45 @@ export function closeFloatingSticky(id: string): Promise<void> {
 /** 归组清单（归组菜单的候选，只含非空组：空组行在写路径上就被清了） */
 export function groupList(): Promise<StickyGroup[]> {
   return invoke<StickyGroup[]>("group_list");
+}
+
+/**
+ * 改组合名。建组时名字抄的是第一张便签的标题，之后只有这一条路能改。
+ * 空串/超长的口径在 Rust 那边（`group::normalize_name`），这里不重复判——
+ * 两处各判一份，早晚判出不一样来。
+ */
+export function groupRename(gid: string, name: string): Promise<void> {
+  return invoke<void>("group_rename", { gid, name });
+}
+
+/**
+ * 收起 / 恢复一叠（叠窗那条 62 高的标题栏）。
+ * 收起时把**当前展开尺寸**报上去（`groups.width/height` 是"恢复成多大"的凭据——
+ * 窗自身的记忆在 window_state 里，收起期间它记的就是那条栏）；恢复时不用报。
+ */
+export function groupSetCollapsed(
+  gid: string,
+  collapsed: boolean,
+  expand?: { width: number; height: number },
+): Promise<void> {
+  return invoke<void>("group_set_collapsed", {
+    gid,
+    collapsed,
+    expandW: expand?.width ?? null,
+    expandH: expand?.height ?? null,
+  });
+}
+
+/**
+ * 贴边 / 解除贴边（一叠）。判定与动画在前端，这条只落状态——与单窗那两列同分工。
+ * `edge` 给 null 就是"没贴"；Rust 那边只认 left/right/top/bottom，认不出一律按没贴算。
+ */
+export function groupSetDock(
+  gid: string,
+  docked: boolean,
+  edge: DockEdge | null,
+): Promise<void> {
+  return invoke<void>("group_set_dock", { gid, docked, edge });
 }
 
 /** 移进已有组（收进叠窗）/ 移出（弹回桌面单窗）。groupId=null 即移出 */
@@ -138,6 +181,27 @@ export function monitorWorkArea(): Promise<WorkArea> {
   return invoke<WorkArea>("monitor_work_area");
 }
 
+/**
+ * 便签窗"内容画完了"那一声：Rust 那边据此把这扇窗亮出来（建的时候是隐藏的，
+ * 为的是不让他先看见 WebView2 那块默认白）。真机侧另有 2s 兜底，喊不响也会显示。
+ *
+ * `focus: false` = 只亮出来、不抢焦点。提醒卡走这一支：一条到点的提醒不该把用户
+ * 正在打字的应用的焦点抢走（星环那条老理由）。默认拿焦点，别处不用改。
+ */
+export function floatReveal(focus = true): Promise<void> {
+  return invoke<void>("float_reveal", { focus });
+}
+
+/** 点提醒卡：收卡 + 把那张便签拉到屏上（组员由 Rust 并进叠窗并翻到那一张） */
+export function reminderOpen(id: string): Promise<void> {
+  return invoke<void>("reminder_open", { id });
+}
+
+/** 提醒卡上的 ×：只收卡 */
+export function reminderDismiss(): Promise<void> {
+  return invoke<void>("reminder_dismiss");
+}
+
 // —— 私密层 ——
 
 export function privateStatus(): Promise<PrivateStatus> {
@@ -211,16 +275,66 @@ export function appSetHotkey(action: string, key: string): Promise<void> {
   return invoke<void>("app_set_hotkey", { action, key });
 }
 
+// —— 图片（media 表，见 migrations/0005_media.sql）——
+
+/**
+ * 存一张图，返回它的 id（正文里那句 `media://<id>` 就是凭据）。
+ * `private` 传的是**这张便签此刻私不私密**——要不要真加密由服务端按"私密层配没配置"定，
+ * 与正文那条直通口径一字不差。
+ */
+export function mediaSave(input: {
+  noteId: string;
+  mime: string;
+  dataBase64: string;
+  width: number;
+  height: number;
+  private: boolean;
+}): Promise<MediaMeta> {
+  return invoke<MediaMeta>("media_save", { input });
+}
+
+/** 取一张图的字节。null = 库里没这行（图删了，或引用来自旧库）；密文没解锁会抛错 */
+export function mediaGet(id: string): Promise<MediaBytes | null> {
+  return invoke<MediaBytes | null>("media_get", { id });
+}
+
+/** 删一张图（正文里去掉那句引用时配套）。true = 真删了一行 */
+export function mediaDelete(id: string): Promise<boolean> {
+  return invoke<boolean>("media_delete", { id });
+}
+
+/** 便签的私密标记翻了：名下每张图重过一遍密文。返回改了几行 */
+export function mediaSetPrivate(noteId: string, isPrivate: boolean): Promise<number> {
+  return invoke<number>("media_set_private", { noteId, private: isPrivate });
+}
+
 /** 右键劫持运行态 */
 export function hookStatus(): Promise<HookStatus> {
   return invoke<HookStatus>("hook_status");
 }
 
-/** 改劫持配置（三项独立可选，只动传来的项） */
+/** 改劫持配置（四项独立可选，只动传来的项） */
 export function hookSetConfig(patch: {
   paused?: boolean;
   holdMs?: number;
+  charging?: boolean;
   whitelist?: string[];
 }): Promise<void> {
   return invoke<void>("hook_set_config", patch);
+}
+
+/**
+ * 桌面上开着的浮窗矩形（物理像素）。拖拽进组的命中判定用：一次给全，
+ * 拖起时取一份快照就够——这一趟里别的窗不会自己跑。
+ */
+export function floatFrames(): Promise<FloatFrame[]> {
+  return invoke<FloatFrame[]>("float_frames");
+}
+
+/**
+ * 拖拽进组：把 sourceId 拖到 targetId 上松手。target 散着就地立一叠（组名与摆位抄它），
+ * 已在某一叠里就进那一叠。成功返回并入的那一叠 id；源窗随之销毁。
+ */
+export function stickyMergeInto(sourceId: string, targetId: string): Promise<string> {
+  return invoke<string>("sticky_merge_into", { sourceId, targetId });
 }

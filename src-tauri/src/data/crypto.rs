@@ -19,7 +19,7 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-use crate::support::error::AppError;
+use crate::support::error::{AppError, AppResult};
 
 pub const KDF_ALGORITHM: &str = "argon2id";
 pub const SALT_LEN: usize = 16;
@@ -93,15 +93,30 @@ pub fn derive_key(password: &str, params: &KdfParams) -> Result<Zeroizing<Vec<u8
     Ok(key)
 }
 
+/// 造一把新的随机密钥（32B）。给"另起一把密钥再被会话密钥包着"那种场合用
+/// （媒体密钥就是），别处不许自己凑随机数。
+pub fn random_key() -> Zeroizing<Vec<u8>> {
+    let mut key = Zeroizing::new(vec![0u8; KEY_LEN]);
+    OsRng.fill_bytes(&mut key);
+    key
+}
+
 /// 加密一个块。随机 nonce；AAD 区分用途。返回 (nonce_b64, ciphertext_b64)。
 pub fn seal(
     key: &[u8],
     aad: &[u8],
     plaintext: &[u8],
 ) -> Result<(String, String), AppError> {
+    let (nonce, ciphertext) = seal_raw(key, aad, plaintext)?;
+    Ok((B64.encode(nonce), B64.encode(ciphertext)))
+}
+
+/// AEAD 本体唯一的一处。`seal` 与 `seal_blob` 都走它——两条路各写一遍加密调用，
+/// 迟早有一条漏掉 AAD 或忘了换 nonce。
+fn seal_raw(key: &[u8], aad: &[u8], plaintext: &[u8]) -> Result<(Vec<u8>, Vec<u8>), AppError> {
     let cipher = Aes256Gcm::new_from_slice(key)
         .map_err(|_| AppError::new("CRYPTO_OPEN", "密钥长度异常"))?;
-    let mut nonce = [0u8; NONCE_LEN];
+    let mut nonce = vec![0u8; NONCE_LEN];
     OsRng.fill_bytes(&mut nonce);
     let ciphertext = cipher
         .encrypt(
@@ -109,7 +124,7 @@ pub fn seal(
             Payload { msg: plaintext, aad },
         )
         .map_err(|_| AppError::new("CRYPTO_ENCRYPT", "加密失败"))?;
-    Ok((B64.encode(nonce), B64.encode(ciphertext)))
+    Ok((nonce, ciphertext))
 }
 
 /// 解密一个块。任何失败（口令错、密文坏、AAD 不对）一律同一个错——不细分原因。
@@ -123,17 +138,42 @@ pub fn open(
         .map_err(|_| AppError::new("CRYPTO_OPEN", "解密失败（口令不正确，或数据已损坏）"))?;
     let ciphertext_bytes = B64.decode(ciphertext)
         .map_err(|_| AppError::new("CRYPTO_OPEN", "解密失败（口令不正确，或数据已损坏）"))?;
+    open_raw(key, aad, &nonce_bytes, &ciphertext_bytes)
+}
+
+fn open_raw(key: &[u8], aad: &[u8], nonce: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, AppError> {
     let cipher = Aes256Gcm::new_from_slice(key)
         .map_err(|_| AppError::new("CRYPTO_OPEN", "解密失败（口令不正确，或数据已损坏）"))?;
+    if nonce.len() != NONCE_LEN {
+        return Err(AppError::new("CRYPTO_OPEN", "解密失败（口令不正确，或数据已损坏）"));
+    }
     cipher
         .decrypt(
-            Nonce::from_slice(&nonce_bytes),
+            Nonce::from_slice(nonce),
             Payload {
-                msg: &ciphertext_bytes,
+                msg: ciphertext,
                 aad,
             },
         )
         .map_err(|_| AppError::new("CRYPTO_OPEN", "解密失败（口令不正确，或数据已损坏）"))
+}
+
+/// 加密成**一个字节串**：nonce(12B) 前缀 + 密文。给 BLOB 列用（图片字节），
+/// 省掉"两列各自 base64"的 1.33 倍体积与一次拆分。
+pub fn seal_blob(key: &[u8], aad: &[u8], plaintext: &[u8]) -> AppResult<Vec<u8>> {
+    let (nonce, ciphertext) = seal_raw(key, aad, plaintext)?;
+    let mut packed = nonce;
+    packed.extend_from_slice(&ciphertext);
+    Ok(packed)
+}
+
+/// 解 `seal_blob` 的产物。连 nonce 都不够长也归"解不开"，与 open 同一口径：不细分。
+pub fn open_blob(key: &[u8], aad: &[u8], packed: &[u8]) -> AppResult<Vec<u8>> {
+    if packed.len() <= NONCE_LEN {
+        return Err(AppError::new("CRYPTO_OPEN", "解密失败（口令不正确，或数据已损坏）"));
+    }
+    let (nonce, ciphertext) = packed.split_at(NONCE_LEN);
+    open_raw(key, aad, nonce, ciphertext)
 }
 
 #[cfg(test)]
@@ -177,5 +217,36 @@ mod tests {
 
         let other = KdfParams::new_random();
         assert_ne!(other.salt, params.salt, "盐随机");
+    }
+
+    /// BLOB 那条路（图片字节）：一次加密解得回来，换 AAD 解不开，
+    /// 同一份明文两次密文不同（nonce 每次换新的这条对 BLOB 同样成立）
+    #[test]
+    fn blob_封装往返与_aad_成套() {
+        let key = vec![7u8; KEY_LEN];
+        let picture = vec![0x89u8, b'P', b'N', b'G', 0, 1, 2, 3];
+        let packed = seal_blob(&key, b"media:a", &picture).expect("封");
+        assert!(packed.len() > picture.len(), "带上了 nonce 与 tag");
+        assert_eq!(open_blob(&key, b"media:a", &packed).expect("开"), picture);
+        assert!(open_blob(&key, b"media:b", &packed).is_err(), "AAD 不成套就是解不开");
+        assert_ne!(
+            packed,
+            seal_blob(&key, b"media:a", &picture).expect("再封一次"),
+            "同明文两次密文不同"
+        );
+    }
+
+    /// 坏数据不许把进程带走：长度不足、nonce 长度不对都只回"解不开"。
+    /// （`Nonce::from_slice` 拿到不对的长度是会 panic 的，这里挡在前面）
+    #[test]
+    fn 坏密文只回错误不_panic() {
+        let key = vec![7u8; KEY_LEN];
+        for bad in [vec![], vec![0u8; 4], vec![0u8; NONCE_LEN]] {
+            let err = open_blob(&key, b"media:a", &bad).expect_err("必须失败");
+            assert_eq!(err.code, "CRYPTO_OPEN", "错误两级不细分：{bad:?}");
+        }
+        let packed = seal_blob(&key, b"media:a", b"abc").expect("封");
+        let truncated = packed[..packed.len() - 1].to_vec();
+        assert!(open_blob(&key, b"media:a", &truncated).is_err(), "少一个字节就是坏");
     }
 }

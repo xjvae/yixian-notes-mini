@@ -1,5 +1,5 @@
-// Backend — store 与传输层之间的接缝。生产实现走 Tauri 命令；测试与将来的
-// 预览台注入内存假体。store 对"数据从哪来"一无所知，也就不需要任何模式机。
+// Backend — store 与传输层之间的接缝。生产实现走 Tauri 命令；测试与预览台
+// （`src/preview/`）注入内存假体。store 对"数据从哪来"一无所知，也就不需要任何模式机。
 
 import type { StickyInput, StickyNote } from "@/platform/contracts";
 import {

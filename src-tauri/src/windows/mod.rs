@@ -1,7 +1,9 @@
+pub mod card;
 pub mod dock;
 pub mod factory;
 pub mod float;
 pub mod frames;
+pub mod hide_all;
 pub mod monitor;
 pub mod ring;
 pub mod search;

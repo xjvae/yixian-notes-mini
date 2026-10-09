@@ -7,8 +7,9 @@ use tauri::{Emitter, Manager, State, WebviewWindow};
 
 use crate::data::private::{self, PrivateVault};
 use crate::support::error::AppResult;
+use crate::support::log;
 
-use super::run_task;
+use super::{run_db, run_task};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -94,11 +95,20 @@ pub async fn private_rekey(
 #[tauri::command]
 pub async fn private_reset(
     win: WebviewWindow,
+    db: State<'_, crate::db::pool::Db>,
     vault: State<'_, PrivateVault>,
     password: String,
 ) -> AppResult<()> {
     let vault = vault.inner().clone();
+    let database = db.inner().clone();
     run_task(move || private::reset(&vault, &password)).await?;
+    // 重置换的是**新**媒体密钥：旧的那些私密图字节从此再也解不开。留着既占地方，
+    // 又让人以为"图还在"——一并清掉，与"重置清空全部私密内容"同一条口径
+    let purged = run_db(database, crate::db::query::media::purge_encrypted).await?;
+    log::info(
+        "private",
+        &format!("重置：同时清掉 {purged} 张再也解不开的私密图"),
+    );
     emit_changed(&win);
     Ok(())
 }

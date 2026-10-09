@@ -1,9 +1,10 @@
-// 右键劫持节 — 长按阈值 / 白名单 / 暂停开关 + 前台进程回显。
+// 右键劫持节 — 长按阈值 / 充电弧 / 白名单 / 暂停开关 + 前台进程回显。
 //
 // 口径（与 Rust 侧 input 模块一致）：
 //  · 阈值滑条松手才提交，Rust 夹回区间后**按实际生效值回显**——界面上显示的
 //    永远是实际跑的值；
 //  · 白名单一行一条，保存即归一化，重拉后显示的是 Rust 归一后的生效名单；
+//  · 充电弧开关落库（`ring.charging`）：关掉后长按过程零反馈，松手直接出盘；
 //  · 暂停是"直到下次启动"的临时开关，重启即恢复（刻意不落库）；
 //  · 「上一个前台程序」读不到时（提权程序等）如实说明：按不在名单算。
 
@@ -58,6 +59,15 @@ export function HookSection() {
     [reload],
   );
 
+  const commitCharging = useCallback(
+    (charging: boolean): void => {
+      void hookSetConfig({ charging })
+        .then(reload)
+        .catch((err: unknown) => setError(String(err)));
+    },
+    [reload],
+  );
+
   const commitWhitelist = useCallback((): void => {
     const lines = whitelistDraft
       .split("\n")
@@ -85,6 +95,15 @@ export function HookSection() {
           onKeyUp={() => commitHold(localHold)}
           className="accent-[var(--panel-ink)]"
         />
+      </label>
+
+      <label className="flex cursor-pointer items-center gap-2">
+        <input
+          type="checkbox"
+          checked={status?.charging ?? true}
+          onChange={(event) => commitCharging(event.target.checked)}
+        />
+        长按时先亮充电弧（快到位那一小段在手上转一圈；关掉则松手直接出盘）
       </label>
 
       <div className="flex flex-col gap-1">

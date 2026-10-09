@@ -1,18 +1,25 @@
 // 迁移 — user_version 逐版本推进。每个版本一次事务（execute_batch 整段 DDL），
-// 预备份（迁移前拷库）随 ROADMAP M4 加入；v1 是全新起点，无存量可保。
+// v1 是全新起点，无存量可保。
+// **迁移前没有自动备份**（原来这句写着"预备份随 M4 加入"，代码里从来没有过）：
+// 唯一的副本是设置窗那条「立即备份」，而它要人自己按。升带 DDL 的版本前先手动备份一次。
 
 use rusqlite::Connection;
 
 use super::pool::Db;
 use crate::support::error::{AppError, AppResult};
 
-pub const TARGET_VERSION: i64 = 3;
+pub const TARGET_VERSION: i64 = 8;
 
 /// (目标版本, 整段 DDL)。执行顺序即数组顺序。
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../../migrations/0001_init.sql")),
     (2, include_str!("../../migrations/0002_timeline.sql")),
     (3, include_str!("../../migrations/0003_dock.sql")),
+    (4, include_str!("../../migrations/0004_icon.sql")),
+    (5, include_str!("../../migrations/0005_media.sql")),
+    (6, include_str!("../../migrations/0006_auto_size.sql")),
+    (7, include_str!("../../migrations/0007_reminder.sql")),
+    (8, include_str!("../../migrations/0008_dock_group.sql")),
 ];
 
 #[derive(Debug)]

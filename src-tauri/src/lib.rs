@@ -24,6 +24,7 @@ mod db;
 mod hotkeys;
 mod import;
 mod input;
+mod reminders;
 mod support;
 mod tray;
 mod windows;
@@ -46,16 +47,28 @@ pub fn run() {
             });
         }))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        // 正文里识别出来的链接要真开系统浏览器（webview 自己开新窗被默认拦掉）。
+        // 权限只给 open-url，见 capabilities/main.json
+        .plugin(tauri_plugin_opener::init())
+        // 提醒到点发系统通知（判据与循环在 `reminders.rs`）。前端不调它，
+        // 所以 capabilities 里没给这条权限也一样能发——是 Rust 侧自己用。
+        .plugin(tauri_plugin_notification::init())
         .manage(windows::factory::CreatingRegistry::default())
         .manage(windows::dock::DockLayout::default())
+        .manage(windows::hide_all::Hidden::default())
         .manage(windows::frames::PanelFrames::default())
         .manage(hotkeys::HotkeyRegistry::default())
         .on_window_event(|window, event| {
             let label = window.label();
             match event {
-                // 销毁清账：贴边注册表不清，槽位号会越涨越大
+                // 销毁清账：贴边注册表不清，槽位号会越涨越大。
+                // 单窗与叠窗**都要剥**——只认 FLOAT_PREFIX 的话，一叠贴边后被关掉，
+                // 它那个槽位永远留在册上，同一条边上的细丝会一路往后爬。
                 tauri::WindowEvent::Destroyed => {
-                    if let Some(id) = label.strip_prefix(windows::float::FLOAT_PREFIX) {
+                    let id = label
+                        .strip_prefix(windows::float::FLOAT_PREFIX)
+                        .or_else(|| label.strip_prefix(windows::float::GROUP_PREFIX));
+                    if let Some(id) = id {
                         window.state::<windows::dock::DockLayout>().remove(id);
                     }
                 }
@@ -157,6 +170,9 @@ pub fn run() {
                 }
                 Err(e) => support::log::error("db", &format!("主库打不开，数据命令将全部拒绝：{e}")),
             }
+            // 提醒调度：库管起来之后才起（循环每轮都要 `try_state::<Db>()`，
+            // 主库没开成就只是空转，不会 panic）。
+            reminders::spawn(handle.clone());
             tray::build(&handle)?;
             // 快捷键最后注册：插件的托管状态要先就位；逐条容忍失败。
             // 覆盖表从已管理的库读（读不到就按默认表全量注册）。
@@ -171,13 +187,19 @@ pub fn run() {
                 .unwrap_or_default();
             hotkeys::register_all(&handle, &overrides);
             // 长按右键钩子最后装（准出判定在回调里是原子量读，装晚不亏）。
-            // 持久化配置（阈值/白名单）先于 spawn 灌进去，钩子起跑就是生效值。
+            // 持久化配置（阈值/充电弧/白名单）先于 spawn 灌进去，钩子起跑就是生效值。
             if let Some(database) = app.try_state::<Db>() {
                 if let Ok(Some(hold)) =
                     db::query::settings::get(database.inner(), commands::hook::HOLD_MS_KEY)
                     && let Ok(ms) = hold.parse::<u32>()
                 {
                     input::set_hold_ms(ms);
+                }
+                // "0" 才是关：读不到、或值漂了都按默认（开着）处理
+                if let Ok(Some(value)) =
+                    db::query::settings::get(database.inner(), commands::hook::CHARGING_KEY)
+                {
+                    input::set_charging(value != "0");
                 }
                 if let Ok(Some(list)) =
                     db::query::settings::get(database.inner(), commands::hook::WHITELIST_KEY)
@@ -209,6 +231,9 @@ pub fn run() {
             commands::entity::trash_restore,
             commands::entity::sticky_set_group,
             commands::entity::group_list,
+            commands::entity::group_rename,
+            commands::entity::group_set_collapsed,
+            commands::entity::group_set_dock,
             commands::search::search_query,
             commands::private::private_status,
             commands::private::private_setup,
@@ -232,11 +257,20 @@ pub fn run() {
             commands::window::open_ring_window,
             commands::window::close_ring_window,
             commands::window::close_group_stack,
+            commands::window::float_frames,
+            commands::entity::sticky_merge_into,
             commands::window::float_dock_register,
             commands::window::float_dock_unregister,
+            commands::window::float_reveal,
+            commands::window::reminder_open,
+            commands::window::reminder_dismiss,
             commands::window::monitor_work_area,
             commands::hotkey::app_set_hotkey,
             commands::hotkey::hotkey_list,
+            commands::media::media_save,
+            commands::media::media_get,
+            commands::media::media_delete,
+            commands::media::media_set_private,
             commands::hook::hook_status,
             commands::hook::hook_set_config,
         ])

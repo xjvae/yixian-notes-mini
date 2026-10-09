@@ -416,15 +416,8 @@ mod tests {
 
     fn new_db() -> Db {
         let db = Db::from_connection(Connection::open_in_memory().expect("内存库"));
-        db.lock()
-            .execute_batch(include_str!("../migrations/0001_init.sql"))
-            .expect("建表");
-        db.lock()
-            .execute_batch(include_str!("../migrations/0002_timeline.sql"))
-            .expect("补列");
-        db.lock()
-            .execute_batch(include_str!("../migrations/0003_dock.sql"))
-            .expect("补贴边列");
+        // 与生产同一条路：跑 migrate::run，别再手抄迁移清单（手抄那份一加列就漏）
+        crate::db::migrate::run(&db).expect("建表");
         db
     }
 

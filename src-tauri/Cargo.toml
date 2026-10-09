@@ -1,6 +1,6 @@
 [package]
 name = "yixian-notes-mini"
-version = "1.0.0"
+version = "1.1.16"
 description = "一闲笔记 mini — 桌面便签"
 authors = ["梦一闲"]
 edition = "2024"
@@ -38,6 +38,11 @@ windows = { version = "0.62", features = [
     "Win32_System_LibraryLoader",
     "Win32_System_Threading",
 ] }
+tauri-plugin-opener = "2.7.0"
+# 提醒到点发系统通知（作者拍的："通知 + 拉到屏上、不抢焦点"）。
+# 通知本身可以失败（Windows 的 toast 要 AUMID、系统开了专注助手会被吞）——
+# 那条路必须**不许**是唯一的一环：同一个触发点还会把便签窗 show 出来，并把成/败记进日志
+tauri-plugin-notification = "2.5.1"
 
 # 随 ROADMAP 加入：argon2/aes-gcm/base64/zeroize（私密层 M3）、
 # windows crate（WH_MOUSE_LL 钩子 M4）、tauri-plugin-global-shortcut（M2）

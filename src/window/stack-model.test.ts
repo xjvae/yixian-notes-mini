@@ -4,7 +4,15 @@
 import { describe, expect, it } from "vitest";
 import type { StickyNote } from "@/platform/contracts";
 import { createDefaultSticky } from "@/data/entities";
-import { activeId, membersOf, neighborId, positionOf } from "@/window/stack-model";
+import {
+  activeId,
+  accordionRows,
+  membersOf,
+  neighborId,
+  positionOf,
+  ACCORDION_OPEN_MIN,
+  ACCORDION_ROW,
+} from "@/window/stack-model";
 
 function note(id: string, overrides: Partial<StickyNote> = {}): StickyNote {
   return { ...createDefaultSticky(id, 1_700_000_000_000), ...overrides };
@@ -79,5 +87,54 @@ describe("positionOf 第几张", () => {
   it("给出 0 起的序；不在这一叠里 → null", () => {
     expect(positionOf(g1, "b")).toBe(1);
     expect(positionOf(g1, "gone")).toBeNull();
+  });
+});
+
+// 下面这几档的几何用例：AREA 取真机默认叠窗的内容区（叠窗默认 320×300，标题条 36 →
+// 内容区 320×264），TINY 取最小窗（220×200 → 164）的内容区。
+
+const AREA = { width: 320, height: 264 };
+const TINY = { width: 220, height: 164 };
+
+// 侧签这一档没有几何用例：块是死的尺寸、由 CSS 往下堆，不在纯函数里算行高。
+// 理由记在 stack-model.ts 的 tabs 那节与 group-tabs.tsx 的文件头——量出来的行高会在
+// 窗 resize 后过期，而过期的结果是既裁一截又滚不动。
+
+describe("accordionRows 手风琴", () => {
+  it("展开那张拿剩下的，收起的每人一条", () => {
+    const { rows, scroll } = accordionRows(4, 0, AREA);
+    expect(scroll).toBe(false);
+    expect(rows[0]?.height).toBe(AREA.height - 3 * ACCORDION_ROW);
+    expect(rows[0]?.open).toBe(true);
+    expect(rows.slice(1).map((row) => row.height)).toEqual([
+      ACCORDION_ROW,
+      ACCORDION_ROW,
+      ACCORDION_ROW,
+    ]);
+  });
+
+  it("展开的那张可以在任意位置：y 是前面各行高度之和", () => {
+    const { rows } = accordionRows(4, 2, AREA);
+    expect(rows[2]?.open).toBe(true);
+    expect(rows[2]?.y).toBe(2 * ACCORDION_ROW);
+    expect(rows[3]?.y).toBe(2 * ACCORDION_ROW + (rows[2]?.height ?? 0));
+  });
+
+  it("十几张时展开那张守住下限，整列改滚", () => {
+    const { rows, scroll } = accordionRows(10, 9, AREA);
+    expect(rows[9]?.height).toBe(ACCORDION_OPEN_MIN);
+    expect(scroll).toBe(true);
+  });
+
+  it("只剩一张就占满", () => {
+    const { rows, scroll } = accordionRows(1, 0, AREA);
+    expect(rows[0]?.height).toBe(AREA.height);
+    expect(scroll).toBe(false);
+  });
+
+  it("最小窗里四张：展开那张还是守住下限（宁可整列滚，也不把正在编辑的压扁）", () => {
+    const { rows, scroll } = accordionRows(4, 0, TINY);
+    expect(rows[0]?.height).toBe(ACCORDION_OPEN_MIN);
+    expect(scroll).toBe(true);
   });
 });

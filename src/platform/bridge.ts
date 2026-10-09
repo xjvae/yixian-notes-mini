@@ -28,6 +28,15 @@ export function installDevBridge(bridge: DevBridge | null): void {
   devBridge = bridge;
 }
 
+/**
+ * 现在跑在 dev 预览台里吗（替身桥装上 = 是）。生产构建恒 false。
+ * 需要"有没有真 Tauri 运行时"这件事的地方问它，别自己去翻 URL 上的 ?preview=1：
+ * 那是预览台的实现细节，而"桥被换了"才是这里要的事实。
+ */
+export function inDevPreview(): boolean {
+  return devBridge !== null;
+}
+
 /** 我们真正用到的 core 表面（避免 typeof import() 注解，也顺便收窄可依赖面） */
 interface TauriCore {
   invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
@@ -96,4 +105,44 @@ export async function setWindowFrame(
   const { LogicalSize, LogicalPosition } = await import("@tauri-apps/api/dpi");
   await win.setSize(new LogicalSize(width, height));
   await win.setPosition(new LogicalPosition(x, y));
+}
+
+/**
+ * 当前窗的**内容区尺寸**（逻辑像素）。
+ *
+ * 收起到标题栏那一档时要"报回展开尺寸"给组行——那是恢复的唯一凭据，而量它的时机
+ * 只能在缩之前。物理像素要除以缩放系数，与 `geometry.ts` 里 moved/resized 同一口径。
+ * 需要 `core:window:allow-inner-size` + `allow-scale-factor`（capabilities/main.json）。
+ */
+export async function currentWindowSize(): Promise<{
+  width: number;
+  height: number;
+}> {
+  const win = devBridge !== null ? devBridge.window : getCurrentWindow();
+  const factor = await win.scaleFactor();
+  const size = await win.innerSize();
+  return {
+    width: Math.round(size.width / factor),
+    height: Math.round(size.height / factor),
+  };
+}
+
+/**
+ * 撤（null）或复窗口原生最小尺寸。
+ *
+ * 贴边细丝是 20×20，而浮窗的 `min_size` 是 220×200：下限不撤，`setSize(20,20)` 会被
+ * 系统直接夹回 220×200，用户看到的"贴边"就是一块正常大小的窗贴在边上。
+ * 只在贴边态撤、离开立刻还回去——"用户手拉不能把便签缩到捏不住"这条要保证留着。
+ * 需要 `core:window:allow-set-min-size`（capabilities/main.json）。
+ */
+export async function setWindowMinSize(
+  size: { width: number; height: number } | null,
+): Promise<void> {
+  const win = devBridge !== null ? devBridge.window : getCurrentWindow();
+  if (size === null) {
+    await win.setMinSize(null);
+    return;
+  }
+  const { LogicalSize } = await import("@tauri-apps/api/dpi");
+  await win.setMinSize(new LogicalSize(size.width, size.height));
 }

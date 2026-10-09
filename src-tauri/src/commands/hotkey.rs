@@ -15,6 +15,9 @@ pub struct HotkeyBinding {
     pub action: String,
     /// 当前生效的键位；空串 = 显式停用
     pub key: String,
+    /// 系统有没有真的收下这个键。**false = 按下去什么都不发生**（被别的程序占着），
+    /// 界面上必须说出来：只显示键位就等于让用户对着一行"看着已绑"的死键
+    pub bound: bool,
 }
 
 /// 改键界面的事实来源：注册表里**实际生效**的那份（不是用户上次的愿望）。
@@ -25,7 +28,7 @@ pub async fn hotkey_list(app: AppHandle) -> AppResult<Vec<HotkeyBinding>> {
     Ok(registry
         .list()
         .into_iter()
-        .map(|(action, key)| HotkeyBinding { action, key })
+        .map(|(action, key, bound)| HotkeyBinding { action, key, bound })
         .collect())
 }
 

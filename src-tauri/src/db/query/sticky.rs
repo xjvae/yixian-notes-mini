@@ -15,7 +15,20 @@ pub fn now_ms() -> i64 {
 
 const COLS: &str = "id, title, body, content_type, items_json, timeline_json, tags_json, theme, \
                     pinned, floating, collapsed, private, group_id, x, y, width, height, due_at, \
-                    done_at, repeat, deleted, deleted_at, created_at, updated_at, docked, dock_edge";
+                    done_at, repeat, deleted, deleted_at, created_at, updated_at, docked, dock_edge, \
+                    icon, auto_size";
+
+/// 三态列的读法：脏值（2、"yes"…）当**没表过态**，而不是猜一个是 true/false——
+/// 猜错就等于替用户改了这一张的模式。
+/// 三态列的读法：只有 0/1 算表过态。NULL、2、文本这些一律当**没表过态**（跟全局走）——
+/// 拿 `Option<i64>` 读会在脏文本上直接报错，整行就读不出来了，所以走 Value。
+fn three_state(raw: rusqlite::types::Value) -> Option<bool> {
+    match raw {
+        rusqlite::types::Value::Integer(0) => Some(false),
+        rusqlite::types::Value::Integer(1) => Some(true),
+        _ => None,
+    }
+}
 
 fn row_to_sticky(row: &rusqlite::Row) -> rusqlite::Result<StickyRow> {
     let items_json: String = row.get("items_json")?;
@@ -46,6 +59,8 @@ fn row_to_sticky(row: &rusqlite::Row) -> rusqlite::Result<StickyRow> {
         deleted_at: row.get("deleted_at")?,
         docked: row.get::<_, i64>("docked")? != 0,
         dock_edge: row.get("dock_edge")?,
+        icon: row.get("icon")?,
+        auto_size: three_state(row.get::<_, rusqlite::types::Value>("auto_size")?),
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
     })
@@ -93,12 +108,12 @@ pub fn upsert(db: &Db, input: StickyInput) -> AppResult<StickyRow> {
                 id, title, body, content_type, items_json, timeline_json, tags_json, theme,
                 pinned, floating, collapsed, private, group_id,
                 x, y, width, height, due_at, done_at, repeat,
-                deleted, deleted_at, created_at, updated_at, docked, dock_edge
+                deleted, deleted_at, created_at, updated_at, docked, dock_edge, icon, auto_size
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
                 ?9, ?10, ?11, ?12, ?13,
                 ?14, ?15, ?16, ?17, ?18, ?19, ?20,
-                ?21, ?22, ?23, ?24, ?25, ?26
+                ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28
             )
             ON CONFLICT(id) DO UPDATE SET
                 title = ?2, body = ?3, content_type = ?4, items_json = ?5, timeline_json = ?6,
@@ -111,7 +126,7 @@ pub fn upsert(db: &Db, input: StickyInput) -> AppResult<StickyRow> {
                     ELSE deleted_at
                 END,
                 updated_at = ?24,
-                docked = ?25, dock_edge = ?26",
+                docked = ?25, dock_edge = ?26, icon = ?27, auto_size = ?28",
             params![
                 input.id,
                 input.title,
@@ -139,6 +154,8 @@ pub fn upsert(db: &Db, input: StickyInput) -> AppResult<StickyRow> {
                 now,
                 input.docked as i64,
                 input.dock_edge,
+                input.icon,
+                input.auto_size,
             ],
         )?;
     }
@@ -148,9 +165,14 @@ pub fn upsert(db: &Db, input: StickyInput) -> AppResult<StickyRow> {
 }
 
 /// 删除。hard=false 软删（进回收站，盖删除时钟）；hard=true 真删（回收站"彻底删除"）。
+///
+/// 真删要顺手带走这张的图：全库没有外键兜着（见 0005_media.sql 那段），漏在这里
+/// 就是永久孤儿字节。这句 SQL 写在锁里、不调 `media::delete_for_note`——
+/// 同一把锁再进一次就自锁了（`Db` 是一个 Mutex\<Connection\>，不可重入）。
 pub fn delete(db: &Db, id: &str, hard: bool) -> AppResult<bool> {
     let conn = db.lock();
     let changed = if hard {
+        conn.execute("DELETE FROM media WHERE note_id = ?1", [id])?;
         conn.execute("DELETE FROM stickies WHERE id = ?1", [id])?
     } else {
         conn.execute(
@@ -164,22 +186,30 @@ pub fn delete(db: &Db, id: &str, hard: bool) -> AppResult<bool> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::media;
     use super::*;
     use crate::db::models::{StickyItem, TimelineEntry};
     use rusqlite::Connection;
 
+    /// 一张最小合法的图（字节与宽高都不重要，这里只验行有没有跟着删）
+    fn picture(id: &str, note_id: &str) -> media::MediaRow {
+        media::MediaRow {
+            id: id.to_string(),
+            note_id: note_id.to_string(),
+            mime: "image/png".to_string(),
+            bytes: vec![1, 2, 3, 4],
+            enc: false,
+            width: 8,
+            height: 8,
+            created_at: 1,
+        }
+    }
+
     fn db_with_schema() -> Db {
         let db = Db::from_connection(Connection::open_in_memory().expect("内存库"));
-        // 与生产同序：全量迁移，别只建 v1（upsert 写的是当前 schema）
-        db.lock()
-            .execute_batch(include_str!("../../../migrations/0001_init.sql"))
-            .expect("建表");
-        db.lock()
-            .execute_batch(include_str!("../../../migrations/0002_timeline.sql"))
-            .expect("补列");
-        db.lock()
-            .execute_batch(include_str!("../../../migrations/0003_dock.sql"))
-            .expect("补贴边列");
+        // 与生产同一条路：跑 migrate::run。手抄迁移清单的那种写法加一列就得改七个 helper，
+        // 漏一处就是"table stickies has no column named icon"这类假崩溃
+        crate::db::migrate::run(&db).expect("建表");
         db
     }
 
@@ -216,6 +246,8 @@ mod tests {
             deleted: false,
             docked: false,
             dock_edge: None,
+            icon: None,
+            auto_size: None,
         }
     }
 
@@ -268,17 +300,72 @@ mod tests {
         assert!(get(&db, "s1").expect("读回").unwrap().deleted_at.is_none());
     }
 
+    /// `auto_size` 是三态不是布尔：NULL = 跟全局走，0 = 这张强制固定，1 = 强制自动。
+    /// 压成布尔就分不开头两种，而那正是这个模式要留的口子。
+    /// 库里被手改成 2 或文本时按"没表过态"算，且**不许把整行读失败**
+    #[test]
+    fn auto_size三态读得回来_脏值当没表过态() {
+        let db = db_with_schema();
+        let mut row = input("s1");
+
+        upsert(&db, row.clone()).expect("NULL 落库");
+        assert_eq!(
+            get(&db, "s1").expect("读").expect("有").auto_size,
+            None,
+            "没表过态"
+        );
+
+        row.auto_size = Some(false);
+        upsert(&db, row.clone()).expect("0 落库");
+        assert_eq!(
+            get(&db, "s1").expect("读").expect("有").auto_size,
+            Some(false),
+            "0 是表过态，不等于 NULL"
+        );
+
+        row.auto_size = Some(true);
+        upsert(&db, row).expect("1 落库");
+        assert_eq!(get(&db, "s1").expect("读").expect("有").auto_size, Some(true));
+
+        for dirty in ["2", "'yes'"] {
+            db.lock()
+                .execute(
+                    &format!("UPDATE stickies SET auto_size = {dirty} WHERE id = 's1'"),
+                    [],
+                )
+                .expect("写脏值");
+            let back = get(&db, "s1").expect("脏值也得把整行读出来");
+            assert_eq!(back.expect("行在").auto_size, None, "脏值 = 没表过态");
+        }
+    }
+
+    /// 硬删要顺手带走这张的图：全库没有外键兜着（见 0005_media.sql 那段），漏在这里
+    /// 就是永久孤儿字节。软删不带走——回收站恢复回来图还得在
     #[test]
     fn 硬删除真的删行() {
         let db = db_with_schema();
         upsert(&db, input("s1")).expect("首写");
+        media::save(&db, &picture("m1", "s1")).expect("存一张图");
+        assert_eq!(media::count_for_note(&db, "s1").expect("数"), 1);
+
+        delete(&db, "s1", false).expect("软删");
+        assert_eq!(
+            media::count_for_note(&db, "s1").expect("再数"),
+            1,
+            "软删不许动图"
+        );
+
         assert!(delete(&db, "s1", true).expect("硬删"));
         assert!(get(&db, "s1").expect("读回").is_none());
+        assert_eq!(
+            media::count_for_note(&db, "s1").expect("数"),
+            0,
+            "硬删要带走图"
+        );
     }
 
     #[test]
-    fn 列表按删除过滤() {
-        let db = db_with_schema();
+    fn 列表按删除过滤() {        let db = db_with_schema();
         upsert(&db, input("s1")).expect("写 s1");
         upsert(&db, input("s2")).expect("写 s2");
         delete(&db, "s2", false).expect("软删 s2");

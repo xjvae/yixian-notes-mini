@@ -1,6 +1,8 @@
 // RingMenu — 星环：长按右键松手后在按下点绽开的 4 节点直达盘。
 //
-// 移植自旧实现（features/radial/menu.tsx），几何、扇区、充电弧、入场动画、
+// 移植自旧架构那份星环（它当时叫 `features/radial/menu.tsx`——那份源码不在这个仓库里，
+// 这台机器上也已经找不到了，留这个名字只为对得上历史提交里的出处）。
+// 几何、扇区、充电弧、入场动画、
 // 错峰、键盘交互全部照旧；适配只有三处：
 //  · 五格 → 四格（上=新建便签、右=搜索、下=回收站、左=设置，正交四方位）；
 //    强调色的错峰取 [-7, 7, -3, 3]（原五格 [-14,-6,0,6,14] 的等距中置版）；
@@ -187,6 +189,20 @@ export function RingMenu() {
         // 盘要绽开了，充电态必须先下台：charging !== "off" 时渲染的是
         // "只有弧"那一棵树，留着它盘就永远出不来
         setCharging("off");
+        // **重放入场动画**：星环窗是 prewarm 常驻隐藏的（windows/ring.rs），React 树
+        // 只在预热时挂载一次，那个 20ms 的 entered 也只翻一次——之后每次 show 拿到的
+        // 都是动画终态，出盘就成了"啪一下直接出现"。这里打回 false 再等一帧置真。
+        // 兜底定时器不能省：rAF 在不可见/被节流的 WebView 里可能一帧都不发，
+        // 只等 rAF 的话 entered 会永远停在 false —— 那是"盘完全不显示"，比没动画糟得多。
+        setEntered(false);
+        let flipped = false;
+        const flip = (): void => {
+          if (flipped) return;
+          flipped = true;
+          setEntered(true);
+        };
+        window.requestAnimationFrame(() => window.requestAnimationFrame(flip));
+        window.setTimeout(flip, 120);
       });
       unDismiss = await listen("ring:dismiss", () => {
         void closeMenu();

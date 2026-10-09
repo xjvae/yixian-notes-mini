@@ -19,12 +19,15 @@ pub async fn open(app: &AppHandle) -> AppResult<()> {
         url: UNLOCK_ENTRY.into(),
         title: "一闲笔记 · 私密密码".into(),
         size: UNLOCK_SIZE,
+        // 解锁窗是一次性的、不参与位置记忆（frames::is_tracked 不认它）：出生位置交回系统
+        position: None,
         min_size: Some((360.0, 400.0)),
         transparent: false,
         always_on_top: true,
         skip_taskbar: true,
         focused: true,
         visible: true,
+        reveal_timeout_ms: None,
         show_on_reuse: true,
         init_script: None,
     };

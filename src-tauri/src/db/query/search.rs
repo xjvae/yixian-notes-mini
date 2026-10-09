@@ -72,15 +72,7 @@ mod tests {
 
     fn db_with_schema() -> Db {
         let db = Db::from_connection(Connection::open_in_memory().expect("内存库"));
-        db.lock()
-            .execute_batch(include_str!("../../../migrations/0001_init.sql"))
-            .expect("建表");
-        db.lock()
-            .execute_batch(include_str!("../../../migrations/0002_timeline.sql"))
-            .expect("补列");
-        db.lock()
-            .execute_batch(include_str!("../../../migrations/0003_dock.sql"))
-            .expect("补贴边列");
+        crate::db::migrate::run(&db).expect("建表");
         db
     }
 
@@ -109,6 +101,8 @@ mod tests {
             deleted: false,
             docked: false,
             dock_edge: None,
+            icon: None,
+            auto_size: None,
         }
     }
 
