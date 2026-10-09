@@ -30,7 +30,7 @@ cargo test               # 在 src-tauri/ 下
 npm run lint && npm run typecheck
 ```
 
-数据目录：`%APPDATA%\com.yixian.notes.mini.v2\`（与旧版应用隔离，旧库导入见 ROADMAP M4）。
+数据目录：`%APPDATA%\com.yixian.notes.mini.v2\`（与旧版应用隔离；旧库导入是一次性路径，代码在 `src-tauri/src/import.rs`）。
 
 ## 预览台（dev only）
 
@@ -51,7 +51,7 @@ npm run dev              # 然后开 http://localhost:5174/preview.html
 长按右键钩子、文件日志与崩溃转储。它也**不校验 IPC 参数名契约**（camelCase↔snake_case
 由 Tauri 转换，那条只能真机或 clippy 侧看）。
 
-## 关键设计决定（详见 ROADMAP.md）
+## 关键设计决定
 
 - 便签墙**不做**；分组保留降级（叠窗 + 移进/移出已有组）。
 - 数据核没有 localStorage、没有模式机：主库不可用就是错误界面。

@@ -7,3 +7,7 @@ coverage/
 # Rust / Tauri 构建产物
 src-tauri/target/
 src-tauri/gen/
+
+# 逐轮工程记录：只留本地，不进仓库（里面全是这台机器的现场笔记与复盘）
+ROADMAP.md
+ARCHITECTURE.md
