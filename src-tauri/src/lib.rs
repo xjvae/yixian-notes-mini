@@ -9,15 +9,19 @@
 //              dock 贴边槽位 / search·trash·settings·unlock·ring 面板窗 /
 //              monitor 工作区取值的唯一一份）
 //   hotkeys  ：全局快捷键（逐条注册、逐条容忍失败、改键落库）
+//   autostart：开机启动（状态在 Windows 注册表的 Run 键里，不落库）
+//   splash   ：开场窗（原生分层窗，不碰 WebView2）
 //   tray     ：系统托盘
 //
-// 装配顺序：状态先 manage（命令与托盘都拿它）→ 数据层（开库 → 迁移 → 导入 →
+// 装配顺序：状态先 manage（命令与托盘都拿它）→ 开场窗（排在开库之前，要盖住的就是
+// 开库 + 首扇 WebView 那一段）→ 数据层（开库 → 迁移 → 导入 →
 // 清算 → 开机恢复）→ 托盘 → 快捷键 → 鼠标钩子。库打不开时不 manage：数据命令
 // 统一失败，托盘的「退出」仍然可用——应用必须留一条用户能自己退出去的路。
 //
 // 退出清理（RunEvent::Exit）：先卸鼠标钩子再走其余清理——钩子不卸，进程收尸后
 // 全系统右键都会被一个死人钩子吞掉，症状是"退出了右键还是坏的"。
 
+mod autostart;
 mod commands;
 mod data;
 mod db;
@@ -25,6 +29,7 @@ mod hotkeys;
 mod import;
 mod input;
 mod reminders;
+mod splash;
 mod support;
 mod tray;
 mod windows;
@@ -53,6 +58,10 @@ pub fn run() {
         // 提醒到点发系统通知（判据与循环在 `reminders.rs`）。前端不调它，
         // 所以 capabilities 里没给这条权限也一样能发——是 Rust 侧自己用。
         .plugin(tauri_plugin_notification::init())
+        // 开机启动：注册表那条 Run 键的读写（托盘的勾选项与设置窗共用一条路）。
+        // 不传启动参数——开机拉起来就要按平时的样子恢复便签，不需要"我是被开机叫醒的"这个分支。
+        // 插件的 setup 跑在下面的 setup 闭包之前，所以 tray::build 里读得到它的托管状态。
+        .plugin(tauri_plugin_autostart::Builder::new().build())
         .manage(windows::factory::CreatingRegistry::default())
         .manage(windows::dock::DockLayout::default())
         .manage(windows::hide_all::Hidden::default())
@@ -85,6 +94,9 @@ pub fn run() {
             // 日志落盘排在所有事之前：真机报障时能还原现场的只有这份文件
             support::log::init(&dir);
             log::info("app", "应用启动");
+            // 开场窗排在开库**之前**：它要盖住的正是"开库 + 第一扇 WebView 冷启动"这段无反馈。
+            // 它自己演它的，绝不分走建窗的时间（失败也只是没开场，不影响启动）。
+            splash::spawn(&handle);
             // 私密层状态扫描：盘上有合法封套才算"配置过"（损坏按没配置算，现场进日志）
             app.manage(data::private::PrivateVault::scan(&dir));
             match db::Db::open(&dir) {
@@ -165,6 +177,23 @@ pub fn run() {
                             }
                             Err(e) => support::log::warn("restore", &format!("叠窗恢复读库失败：{e}")),
                         }
+                    }
+                    // 首次启动自动演一次引导教程（看过之后只剩设置里那颗「重看引导教程」）。
+                    // 判据与 close_guide_window 写的是同一个键：缺键 = 没看过。
+                    // 读不动库就按看过处理——那一窗本身要读库以外的东西才讲得清，
+                    // 但"每次启动都跳出一扇教程窗"比"这一次没演"糟得多。
+                    let guide_seen =
+                        match db::query::settings::get(&database, windows::guide::GUIDE_SEEN_KEY) {
+                            Ok(value) => value.as_deref() == Some("1"),
+                            Err(_) => true,
+                        };
+                    if !guide_seen {
+                        let handle = handle.clone();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(e) = windows::guide::open(&handle).await {
+                                support::log::warn("guide", &format!("首次引导没开起来：{e}"));
+                            }
+                        });
                     }
                     app.manage(database);
                 }
@@ -252,6 +281,12 @@ pub fn run() {
             commands::window::close_search_window,
             commands::window::open_settings_window,
             commands::window::close_settings_window,
+            commands::window::open_guide_window,
+            commands::window::close_guide_window,
+            commands::window::guide_show_ring,
+            commands::window::guide_release_ring,
+            commands::window::tray_rect,
+            commands::window::guide_demo_note,
             commands::window::open_unlock_window,
             commands::window::close_unlock_window,
             commands::window::open_ring_window,
@@ -267,6 +302,8 @@ pub fn run() {
             commands::window::monitor_work_area,
             commands::hotkey::app_set_hotkey,
             commands::hotkey::hotkey_list,
+            commands::autostart::autostart_get,
+            commands::autostart::autostart_set,
             commands::media::media_save,
             commands::media::media_get,
             commands::media::media_delete,
@@ -282,6 +319,9 @@ pub fn run() {
         // 全系统右键会被一个死人的钩子吞掉——这条必须排在一切清理之前。
         if let tauri::RunEvent::Exit = event {
             input::shutdown();
+            // 尽力而为：这会儿事件循环已经在收尾，投得到的话能收干净，投不到窗口随进程没。
+            // 排在卸钩子**之后**——那条才是"退出了右键还是坏的"的根源
+            splash::dismiss(splash::Reason::Exit);
         }
     });
 }

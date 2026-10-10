@@ -592,7 +592,7 @@ export function RingMenu() {
   );
 }
 
-async function closeMenu() {
+async function closeMenu(): Promise<void> {
   try {
     await closeRingWindow();
   } catch (error) {

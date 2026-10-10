@@ -292,6 +292,16 @@ pub fn gen_group_id() -> String {
     id::group()
 }
 
+/// 引导的**虚拟演示便签**：与默认那张同一条路，只是给它一个名字。
+/// 起名是为了演的时候一眼看得懂"这张是引导造的"；销毁不靠名字，靠库里记的那串 id ——
+/// 他自己写一张同名便签不该被引导吃掉。
+pub fn demo_input(id: &str, title: &str) -> StickyInput {
+    StickyInput {
+        title: title.to_string(),
+        ..default_input(id)
+    }
+}
+
 fn default_input(id: &str) -> StickyInput {
     StickyInput {
         id: id.to_string(),

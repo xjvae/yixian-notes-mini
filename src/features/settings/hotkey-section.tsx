@@ -15,29 +15,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { appSetHotkey, hotkeyList } from "@/platform/commands";
 import type { HotkeyBinding } from "@/platform/contracts";
-
-const ACTION_LABELS: Record<string, string> = {
-  ring: "唤起星环",
-  sticky: "新建便签",
-  search: "搜索",
-  trash: "回收站",
-  settings: "设置",
-  "hide-all": "收起全部便签",
-  "show-all": "恢复全部便签",
-};
-
-function prettyKey(accel: string): string {
-  if (accel === "") return "已停用";
-  return accel
-    .split("+")
-    .map((part) =>
-      part
-        .replace(/^Key/, "")
-        .replace(/^Digit/, "")
-        .replace(/^Space$/, "空格"),
-    )
-    .join(" + ");
-}
+// 名字与写法在 `data/hotkey-labels.ts`，与引导教程第九步共用一份：
+// 两处各写一套，迟早一个念 Alt+1 一个念 Ctrl+1
+import { ACTION_LABELS, prettyKey } from "@/data/hotkey-labels";
 
 export function HotkeySection() {
   const [bindings, setBindings] = useState<HotkeyBinding[] | null>(null);

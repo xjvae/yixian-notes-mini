@@ -210,6 +210,11 @@ export interface HookStatus {
 /** 事件名常量：拼错是编译错误 */
 export const DB_CHANGED = "db:changed";
 export const PRIVATE_CHANGED = "store:private-changed";
+/**
+ * 开机启动翻了（托盘那一条勾也会发它）。负载就是新的实际状态。
+ * 事实来源是 Windows 注册表，不是库：这条只是"去重读一遍"的通知。
+ */
+export const AUTOSTART_CHANGED = "app:autostart-changed";
 /** 让某扇叠窗翻到指定那张（点搜索结果 / 归组 / 回收站恢复；窗已在了才用得上） */
 export const STICKY_REVEAL = "sticky:reveal";
 

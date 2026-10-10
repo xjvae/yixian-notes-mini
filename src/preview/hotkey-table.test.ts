@@ -1,7 +1,7 @@
 // 热键表有三份抄本，漂一处就是"设置里那个键按了没反应"：
 //  · Rust `hotkeys.rs::DEFAULT_BINDINGS`（真正注册的那份，顺序 = 界面顺序）
 //  · 预览台 `preview/fake-db.ts::DEFAULT_BINDINGS`（假核要答同样的清单）
-//  · 设置窗 `settings/hotkey-section.tsx::ACTION_LABELS`（每个动作的人话名字）
+//  · `data/hotkey-labels.ts::ACTION_LABELS`（每个动作的人话名字，设置窗与引导教程共用）
 // 三边都写着"改一边要同步另一边"的注释，注释拦不住过——所以让它测试红。
 //
 // 三份都**按文本读**（vite 的 `?raw`），不 import：`fake-db.ts` 与设置窗那一层都会顺着
@@ -12,7 +12,7 @@
 import { describe, expect, it } from "vitest";
 import rustSource from "../../src-tauri/src/hotkeys.rs?raw";
 import previewSource from "../../src/preview/fake-db.ts?raw";
-import labelSource from "../../src/features/settings/hotkey-section.tsx?raw";
+import labelSource from "../../src/data/hotkey-labels.ts?raw";
 
 /** Rust 那份：`("action", "Alt+1"),` */
 function rustBindings(): [string, string][] {
@@ -33,7 +33,7 @@ function previewBindings(): [string, string][] {
 /** 设置窗那份的键名：`sticky: "新建便签",`（`"hide-all"` 带引号，因为有连字符） */
 function labelKeys(): string[] {
   const block = /const ACTION_LABELS[^=]*=\s*{(.*?)\n};/s.exec(labelSource);
-  expect(block, "hotkey-section.tsx 里没找到 ACTION_LABELS 那段").not.toBeNull();
+  expect(block, "hotkey-labels.ts 里没找到 ACTION_LABELS 那段").not.toBeNull();
   return [...block![1].matchAll(/^\s*"?([\w-]+)"?\s*:/gm)].map((m) => m[1]);
 }
 

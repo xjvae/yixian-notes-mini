@@ -30,6 +30,7 @@ export default defineConfig(({ command }) => ({
         settings: path.resolve(import.meta.dirname, "settings.html"),
         unlock: path.resolve(import.meta.dirname, "unlock.html"),
         ring: path.resolve(import.meta.dirname, "ring.html"),
+        guide: path.resolve(import.meta.dirname, "guide.html"),
         ...(command === "serve"
           ? { preview: path.resolve(import.meta.dirname, "preview.html") }
           : {}),

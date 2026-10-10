@@ -3,6 +3,7 @@ pub mod dock;
 pub mod factory;
 pub mod float;
 pub mod frames;
+pub mod guide;
 pub mod hide_all;
 pub mod monitor;
 pub mod ring;

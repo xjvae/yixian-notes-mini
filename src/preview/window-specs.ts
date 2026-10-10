@@ -1,12 +1,12 @@
 // 预览台的窗型规格 — 与 Rust 侧 windows/*.rs 的常量一一对应，改一边要同步另一边：
 //   float.rs   DEFAULT_SIZE 320×300 / MIN_SIZE 220×200 / BAR_HEIGHT 62 / BAR_MAX_WIDTH 360
 //   search.rs  480×420（min 380×340）· trash.rs 440×560（min 360×420）
-//   settings.rs 560×480（min 480×420）· unlock.rs 420×470
+//   settings.rs 560×480（min 480×420）· unlock.rs 420×470 · guide.rs 320×168（无边框气泡）
 //   ring.rs    RING_SIZE 360×360（正方形，ring.rs 里有一条自 assert 钉着）
 // url 与 vite.config.ts 的 rollupOptions.input 同表（跨语言契约那条纪律在这里同样成立）。
 
 export type FrameKind =
-  "sticky" | "stack" | "search" | "trash" | "settings" | "unlock" | "ring";
+  "sticky" | "stack" | "search" | "trash" | "settings" | "unlock" | "ring" | "guide";
 
 export interface Rect {
   x: number;
@@ -96,6 +96,14 @@ const SIZE: Record<
     entry: "ring.html",
     title: "星环",
   },
+  guide: {
+    // 与 guide.rs 的 BUBBLE_SIZE 同值（320×168 逻辑像素）。教程是一扇无边框透明小气泡，
+    // 关 = 销毁（不在 HIDE_ON_CLOSE 里）：下次开都从第一步起
+    size: { width: 320, height: 168 },
+    min: { width: 0, height: 0 },
+    entry: "guide.html",
+    title: "引导",
+  },
 };
 
 export const PANEL_LABELS: readonly { kind: FrameKind; label: string }[] = [
@@ -104,6 +112,7 @@ export const PANEL_LABELS: readonly { kind: FrameKind; label: string }[] = [
   { kind: "settings", label: "settings" },
   { kind: "unlock", label: "unlock" },
   { kind: "ring", label: "ring" },
+  { kind: "guide", label: "guide" },
 ];
 
 export const FLOAT_PREFIX = "sticky-";

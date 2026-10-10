@@ -17,15 +17,16 @@ import {
   type PreviewArgs,
   type WindowAction,
 } from "@/preview/fake-db";
+import { dismissSplashMock } from "@/preview/splash-mock";
 import {
   BAR_HEIGHT,
   BAR_MAX_WIDTH,
   FLOAT_PREFIX,
   GROUP_PREFIX,
   HIDE_ON_CLOSE,
+  PANEL_LABELS,
   cascadePosition,
   specOf,
-  type FrameKind,
   type FrameSpec,
   type Rect,
 } from "@/preview/window-specs";
@@ -256,14 +257,10 @@ export class PreviewHost {
       this.focus(label);
       return;
     }
-    const panels: Partial<Record<string, FrameKind>> = {
-      search: "search",
-      trash: "trash",
-      settings: "settings",
-      unlock: "unlock",
-      ring: "ring",
-    };
-    const kind = panels[label];
+    // 窗型从 window-specs 的那一份表面板里查，不在这里再抄一张表：
+    // 上一版这里自己列了五颗 label，加第六扇窗时只改了 specs 与 fake-db，
+    // 于是命令回了成功、框却静悄悄不建——两份名单早晚对不上，就是这么个错法
+    const kind = PANEL_LABELS.find((panel) => panel.label === label)?.kind;
     if (kind === undefined) return;
     const spec = specOf(kind);
     this.add({
@@ -417,6 +414,19 @@ export class PreviewHost {
     actions: WindowAction[];
     broadcasts: Broadcast[];
   }): void {
+    // 任何一条"把一扇窗拉到眼前"的动作都算真机里 `float_reveal` 那一声：开场复刻在这儿收场。
+    // （真机那一侧的对应口径在 `windows/factory.rs`：面板窗出生就可见，不走 float_reveal，
+    // 所以那边是在建窗处按 `spec.visible` 叫的收场）
+    if (
+      drain.actions.some(
+        (action) =>
+          action.kind === "open-sticky" ||
+          action.kind === "open-stack" ||
+          action.kind === "open-panel",
+      )
+    ) {
+      dismissSplashMock();
+    }
     for (const action of drain.actions) {
       switch (action.kind) {
         case "open-sticky":

@@ -9,8 +9,10 @@ use crate::db::pool::Db;
 use crate::support::error::{AppError, AppResult};
 use crate::support::log;
 use crate::windows::{
-    card, dock::DockLayout, float, monitor, ring, search, settings, trash, unlock,
+    card, dock::DockLayout, float, guide, monitor, ring, search, settings, trash, unlock,
 };
+
+use super::run_db;
 
 #[tauri::command]
 pub async fn create_floating_sticky(app: AppHandle, db: State<'_, Db>) -> AppResult<String> {
@@ -57,6 +59,148 @@ pub async fn open_settings_window(app: AppHandle) -> AppResult<()> {
 #[tauri::command]
 pub async fn close_settings_window(app: AppHandle) -> AppResult<()> {
     settings::close(&app).await
+}
+
+#[tauri::command]
+pub async fn open_guide_window(app: AppHandle) -> AppResult<()> {
+    guide::open(&app).await
+}
+
+/// 讲星环那几步：报回屏幕上那只环的真实中心（逻辑像素），气泡据此摆过去。
+#[tauri::command]
+pub async fn guide_show_ring(app: AppHandle) -> AppResult<guide::RingSpot> {
+    guide::show_ring(&app).await
+}
+
+/// 离开讲环的那几步：闸门放下、环还开着就收掉。
+#[tauri::command]
+pub async fn guide_release_ring(app: AppHandle) {
+    guide::release_ring(&app).await;
+}
+
+/// 托盘里我们那一格的矩形（**物理**像素），问不到回 null（气泡退右下角那一档摆法）。
+/// UIA 那一路要跨进程问 Explorer，几十到几百毫秒，所以放去阻塞线程池里跑，
+/// 别占着异步运行时的 worker。
+#[tauri::command]
+pub async fn tray_rect() -> Option<crate::tray::TrayRect> {
+    tauri::async_runtime::spawn_blocking(|| crate::tray::icon_rect())
+        .await
+        .unwrap_or(None)
+}
+
+/// 虚拟演示便签：**凑够** `want` 张给讲便签的那几步指着（已有的不动，缺几张补几张）。
+/// 为什么由引导放纸而不是让他按新建：并叠那一步要说"把那张拖到这一张上"，桌上得真有两张。
+/// 上一版写的是"你自己按 1"，他照做就变成"又新建了一张便签"——那是在重复第三步，不是在并叠。
+/// 走完引导直接销毁、不进回收站（作者拍的）—— 那是引导造的纸，不是他写的东西。
+/// 返回最后那张的窗 label，气泡照 label 摆位（不用猜"哪张是新出现的"）。
+#[tauri::command]
+pub async fn guide_demo_note(app: AppHandle, want: u8) -> AppResult<String> {
+    let db = app
+        .try_state::<Db>()
+        .ok_or_else(|| AppError::new("DB_MISSING", "主库不可用，建不出演示便签"))?
+        .inner()
+        .clone();
+    let want = want.clamp(1, 4) as usize;
+    let mut ids = live_demo_ids(&app, &db).await?;
+    while ids.len() < want {
+        let id = crate::support::id::sticky();
+        // 只有一张时叫「引导演示」，补出来的才编号：后缀那个 1 是噪音
+        let title = if ids.is_empty() {
+            "引导演示".to_string()
+        } else {
+            format!("引导演示 {}", ids.len() + 1)
+        };
+        let input = float::demo_input(&id, &title);
+        run_db(db.clone(), move |db| crate::db::query::sticky::upsert(db, input)).await?;
+        float::open_sticky(&app, &db, &id).await?;
+        ids.push(id);
+        log::info("guide", &format!("放出演示便签「{title}」，共 {} 张", ids.len()));
+    }
+    let joined = ids.join(",");
+    run_db(db.clone(), move |db| {
+        crate::db::query::settings::set(db, guide::GUIDE_DEMO_NOTE_KEY, &joined)
+    })
+    .await?;
+    ids.last()
+        .cloned()
+        .map(|id| format!("{}{id}", float::FLOAT_PREFIX))
+        .ok_or_else(|| AppError::new("GUIDE_DEMO", "一张演示便签都没凑出来"))
+}
+
+/// 库里记的那串 id 里**现在还活着**的那几张。他自己删过或应用被直接关过，记号就会留着死 id：
+/// 死 id 一并抹掉，顺手把它那扇可能还开着的窗关掉（关掉失败不算错，窗本来就不在）。
+async fn live_demo_ids(app: &AppHandle, db: &Db) -> AppResult<Vec<String>> {
+    let stored = run_db(db.clone(), |db| {
+        crate::db::query::settings::get(db, guide::GUIDE_DEMO_NOTE_KEY)
+    })
+    .await?
+    .unwrap_or_default();
+    let mut live = Vec::new();
+    for id in stored.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        let for_check = id.to_string();
+        let exists = run_db(db.clone(), move |db| {
+            crate::db::query::sticky::get(db, &for_check).map(|row| row.is_some())
+        })
+        .await?;
+        if exists {
+            live.push(id.to_string());
+        } else if let Err(e) = float::close_sticky(app, id).await {
+            log::info("guide", &format!("死掉的演示便签 {id} 那扇窗没关掉：{e}"));
+        }
+    }
+    Ok(live)
+}
+
+/// 销毁引导自己造的那几张：硬删（不进回收站）+ 抹掉记号 + 关掉它们的窗。
+/// 每一步都允许失败：删不掉只是多留一张纸，而"关不掉引导"才是真把人困住。
+async fn destroy_demo_notes(app: &AppHandle, db: Db, ids: &[String]) {
+    for id in ids {
+        let for_del = id.clone();
+        if let Err(e) = run_db(db.clone(), move |db| {
+            crate::db::query::sticky::delete(db, &for_del, true)?;
+            crate::db::query::group::prune_empty(db)
+        })
+        .await
+        {
+            log::warn("guide", &format!("演示便签没销毁掉（多留一张纸）：{e}"));
+        }
+        // 删行不带走窗：窗还开着就是一张指向不存在的数据的纸
+        if let Err(e) = float::close_sticky(app, id).await {
+            log::warn("guide", &format!("演示便签那扇窗没关掉：{e}"));
+        }
+    }
+    if let Err(e) = run_db(db, |db| {
+        crate::db::query::settings::set(db, guide::GUIDE_DEMO_NOTE_KEY, "")
+    })
+    .await
+    {
+        log::warn("guide", &format!("演示便签的记号没抹掉：{e}"));
+    }
+}
+
+/// 关引导窗 + 顺手销账。**顺序是刻意的**：先销账再关，但销账失败不许拦住关窗——
+/// 写不动只是下次启动多演一次，而"关不掉"是真的把人困住。
+/// 销账摆在这条命令而不是窗内：窗上有 × 与 Esc 两条关法，写在窗内就得两处各写一遍。
+#[tauri::command]
+pub async fn close_guide_window(app: AppHandle) -> AppResult<()> {
+    if let Some(db) = app.try_state::<Db>() {
+        let database = db.inner().clone();
+        if let Err(e) =
+            run_db(database.clone(), |db| {
+                crate::db::query::settings::set(db, guide::GUIDE_SEEN_KEY, "1")
+            })
+            .await
+        {
+            log::warn("guide", &format!("销账失败（下次启动会再演一次）：{e}"));
+        }
+        // 它造的那几张跟着引导一起没（这一步在关窗之前：窗一关，前端就再也没机会说了）
+        if let Ok(ids) = live_demo_ids(&app, &database).await {
+            if !ids.is_empty() {
+                destroy_demo_notes(&app, database, &ids).await;
+            }
+        }
+    }
+    guide::close(&app).await
 }
 
 #[tauri::command]
@@ -182,6 +326,9 @@ pub struct WorkArea {
 #[tauri::command]
 pub fn float_reveal(win: WebviewWindow, focus: Option<bool>) -> AppResult<()> {
     win.show().map_err(|e| AppError::new("WINDOW_SHOW", e.to_string()))?;
+    // 屏幕上真有东西了，开场就该收——这条同时管提醒卡与叠窗（它们也走 float_reveal）。
+    // 只投递不等回执，所以在这条同步命令里也不会卡主线程
+    crate::splash::dismiss(crate::splash::Reason::Revealed);
     // 焦点这一步失败了不算什么：窗已经在了，宁可少个焦点也别回一个错让前端猜
     if focus.unwrap_or(true) {
         let _ = win.set_focus();

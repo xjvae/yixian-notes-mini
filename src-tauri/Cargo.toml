@@ -1,6 +1,6 @@
 [package]
 name = "yixian-notes-mini"
-version = "1.1.17"
+version = "1.2.0"
 description = "一闲笔记 mini — 桌面便签"
 authors = ["梦一闲"]
 edition = "2024"
@@ -37,8 +37,17 @@ windows = { version = "0.62", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_LibraryLoader",
     "Win32_System_Threading",
+    # 开场窗（splash.rs）：读一眼系统的深浅色档位，不开库也能定出第一帧的颜色
+    "Win32_System_Registry",
+    # 引导第十步要贴着托盘里我们那一格摆：那个矩形只有 UI Automation 拿得到
+    #（Win11 的托盘不是 ToolbarWindow32 那一套了，子句柄里根本没有图标）
+    "Win32_UI_Accessibility",
+    "Win32_System_Com",
 ] }
 tauri-plugin-opener = "2.7.0"
+# 开机启动（托盘与设置窗那一条勾）。写的是 HKCU\...\Run，键不在就是没开——
+# 所以"默认不开启"不用建库表、不用迁移，注册表本身就是事实来源（见 autostart.rs）
+tauri-plugin-autostart = "2.5"
 # 提醒到点发系统通知（作者拍的："通知 + 拉到屏上、不抢焦点"）。
 # 通知本身可以失败（Windows 的 toast 要 AUMID、系统开了专注助手会被吞）——
 # 那条路必须**不许**是唯一的一环：同一个触发点还会把便签窗 show 出来，并把成/败记进日志

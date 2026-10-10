@@ -62,6 +62,8 @@ pub async fn build_window(app: &AppHandle, spec: WindowSpec) -> AppResult<Webvie
         if spec.show_on_reuse {
             let _ = existing.show();
             let _ = existing.set_focus();
+            // 复用那一路也是"窗露脸"：见下面那条同名的说明
+            crate::splash::dismiss(crate::splash::Reason::Revealed);
         }
         return Ok(existing);
     }
@@ -76,10 +78,17 @@ pub async fn build_window(app: &AppHandle, spec: WindowSpec) -> AppResult<Webvie
         }
     }
     let label = spec.label.clone();
+    // 面板窗（设置/搜索/回收站/口令）是 `visible: true` 出生、**从不喊 `float_reveal`**
+    // ——那条命令只服务隐藏建的便签窗与提醒卡。所以开场窗的收场要在这一处叫，
+    // 否则"开机没恢复便签 → 直接 Alt+4 开设置"那一路会让那块画压在设置窗上直到时长上限。
+    let visible_on_birth = spec.visible;
     let result = do_build(app, spec).await;
     {
         let mut creating = registry.0.lock().unwrap_or_else(|p| p.into_inner());
         creating.remove(&label);
+    }
+    if visible_on_birth {
+        crate::splash::dismiss(crate::splash::Reason::Revealed);
     }
     result
 }

@@ -3,6 +3,7 @@
 // 重活统一走 run_db / run_task（spawn_blocking），MutexGuard 永不跨 .await。
 
 // 子模块必须 pub：generate_handler! 要在同模块里找命令宏生成的隐藏项
+pub mod autostart;
 pub mod db;
 pub mod entity;
 pub mod hook;

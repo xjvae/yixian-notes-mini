@@ -380,7 +380,11 @@ unsafe extern "system" fn hook_body(ncode: i32, wparam: WPARAM, lparam: LPARAM) 
         // 同样会走到这里——只有布尔账本时就把它判成盘外，症状是
         // "点节点没反应，环却收了"。读的是 reveal 公告好的物理矩形，无锁。
         if ring_may_dismiss {
-            if !crate::input::ring_contains(info.pt.x, info.pt.y) {
+            // 引导教程正指着盘讲的时候，盘外左键**不**收环：气泡就在盘外，点它推进
+            // 按平时的规则等于把环点掉（"第二步闪星环盘"就是这条）。盘内那一下照常。
+            if !crate::input::ring_contains(info.pt.x, info.pt.y)
+                && !crate::input::guide_holds_ring()
+            {
                 notify(RingEvent::Dismiss);
             }
             return CallNextHookEx(None, ncode, wparam, lparam);
@@ -633,7 +637,12 @@ fn push_taskbar_rect(out: &mut Vec<(i32, i32, i32, i32)>, hwnd: HWND) {
 fn collect_taskbar_rects() -> Vec<(i32, i32, i32, i32)> {
     let mut out = Vec::new();
     unsafe {
-        if let Ok(main) = FindWindowW(None, windows::core::w!("Shell_TrayWnd"))
+        // 类名是**第一个**参数：写成 `FindWindowW(None, w!("Shell_TrayWnd"))` 是拿
+        // "Shell_TrayWnd" 当窗口标题去找，永远找不到 —— 于是主屏任务栏从来没进过这张表，
+        // 那条"任务栏/托盘整条豁免"只在副屏生效（副屏走 FindWindowExW，那个的类名在第三位，
+        // 恰好是对的）。症状就是主屏任务栏上每一次右键都走"吞 down + 注入一对 down/up"，
+        // 也就是这条注释里说要避开的那个卡顿。
+        if let Ok(main) = FindWindowW(windows::core::w!("Shell_TrayWnd"), None)
             && !main.is_invalid()
         {
             push_taskbar_rect(&mut out, main);

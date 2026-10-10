@@ -271,3 +271,98 @@ textarea {
     stroke-dashoffset: 0;
   }
 }
+
+/* —— 引导气泡（features/guide）——
+ *
+ * 一扇 320×168 的无边框透明置顶小窗（形状照提醒卡 `windows/card.rs`），浮在它讲的那个
+ * 东西旁边。**不遮罩**：Tauri 的点击穿透是整窗开关（`set_ignore_cursor_events` 没有区域
+ * 粒度），遮罩一盖，引导期间就点不动真东西——那就成了"看着教程不能跟着做"。
+ *
+ * 两条这里特有的账：
+ *  · 透明窗把窗矩形以外**全裁掉**，外阴影等于没画（那条老话，窗影 0 像素就是这么来的）。
+ *    所以气泡四周留内边距，边用描边、不指望投影出窗。
+ *  · 换步的淡入写成 "from <偏移> to <自然态>"：关掉系统动画时气泡是完整可见的，
+ *    不是透明的一片——教程在 reduce 档还得把事说清。
+ */
+.g-bubble {
+  position: absolute;
+  inset: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--panel-border);
+  background: var(--panel-card);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  color: var(--panel-ink);
+}
+
+:root[data-theme="dark"] .g-bubble {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+/* 指向箭头：**必须用 border 三角形，不能用"方块转 45°"**。
+ * 转 45° 的 12px 方块对角约 15.6px，一半要伸到卡片外——而透明窗把窗矩形以外全裁掉，
+ * 那半个箭头根本没画出来，看着就是气泡指错了方向。三角形最高 7px，正好压在卡片边缘
+ * 与那 6 像素内边距上（多出的 1 像素盖住卡片描边，接缝看不见）。 */
+.g-arrow {
+  position: absolute;
+  width: 0;
+  height: 0;
+  border: 0 solid transparent;
+}
+
+/* 朝下指：上边那条有色 = 三角形的底，左右透明两条 = 两个腰 */
+.g-arrow[data-dir="down"] {
+  bottom: 0;
+  left: 50%;
+  translate: -50% 0;
+  border-left: 7px solid transparent;
+  border-right: 7px solid transparent;
+  border-top: 7px solid var(--panel-card);
+}
+
+.g-arrow[data-dir="up"] {
+  top: 0;
+  left: 50%;
+  translate: -50% 0;
+  border-left: 7px solid transparent;
+  border-right: 7px solid transparent;
+  border-bottom: 7px solid var(--panel-card);
+}
+
+.g-arrow[data-dir="right"] {
+  top: 50%;
+  right: 0;
+  translate: 0 -50%;
+  border-top: 7px solid transparent;
+  border-bottom: 7px solid transparent;
+  border-left: 7px solid var(--panel-card);
+}
+
+.g-arrow[data-dir="left"] {
+  top: 50%;
+  left: 0;
+  translate: 0 -50%;
+  border-top: 7px solid transparent;
+  border-bottom: 7px solid transparent;
+  border-right: 7px solid var(--panel-card);
+}
+
+@keyframes g-bubble-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+.g-bubble-in {
+  animation: g-bubble-in 130ms cubic-bezier(0.22, 0.8, 0.28, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .g-bubble-in {
+    animation: none !important;
+  }
+}

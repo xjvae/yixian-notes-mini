@@ -11,9 +11,54 @@
 import { StrictMode, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import { PreviewHost } from "@/preview/host";
+import { playSplashMock } from "@/preview/splash-mock";
 import "@/index.css";
 
 const host = new PreviewHost();
+
+/**
+ * 自动演引导：替他每 4 秒点一次「下一步」，走到 12/12 自己停（不自动收尾，留在那一屏给他看结尾）。
+ * **只有预览台有这条**，产品里没有（拍定的口径：进度可以虚拟，产品不许）。
+ * 值得做的理由很直白：他想核的是"整套走下来每一步指得对不对"，而手动点十二次
+ * 考的是他的注意力，不是在演示任何东西。再点一次这颗钮 = 停下并把引导关掉。
+ */
+let autoplayTimer: number | null = null;
+const AUTOPLAY_MS = 4000;
+
+function guideFrame(): HTMLIFrameElement | undefined {
+  return Array.from(document.querySelectorAll("iframe")).find((f) =>
+    (f.getAttribute("aria-label") ?? f.title ?? "").includes("guide"),
+  );
+}
+
+function stopAutoplay(closeGuide: boolean): void {
+  if (autoplayTimer !== null) {
+    window.clearInterval(autoplayTimer);
+    autoplayTimer = null;
+  }
+  if (closeGuide) host.run("close_guide_window");
+}
+
+function autoplayGuide(): void {
+  if (autoplayTimer !== null) {
+    stopAutoplay(true);
+    return;
+  }
+  host.run("open_guide_window");
+  autoplayTimer = window.setInterval(() => {
+    const frame = guideFrame();
+    const doc = frame?.contentDocument ?? null;
+    const counter = doc?.querySelector("[aria-live]")?.textContent.trim() ?? "";
+    // 读不到窗（被关了）或已经走到最后一屏就停 —— 最后那屏的钮是「知道了」，
+    // 自动按下等于把引导收了，他正要看的那一屏就没了
+    if (doc === null || counter.endsWith("12 / 12")) {
+      stopAutoplay(false);
+      return;
+    }
+    const buttons = Array.from(doc.querySelectorAll("button"));
+    buttons[buttons.length - 1]?.click();
+  }, AUTOPLAY_MS);
+}
 
 const TOOLBAR: readonly { label: string; run: () => unknown }[] = [
   { label: "新建便签", run: () => host.run("create_floating_sticky") },
@@ -22,7 +67,14 @@ const TOOLBAR: readonly { label: string; run: () => unknown }[] = [
   { label: "设置窗", run: () => host.run("open_settings_window") },
   { label: "口令窗", run: () => host.run("open_unlock_window") },
   { label: "星环", run: () => host.run("open_ring_window") },
+  { label: "引导教程", run: () => host.run("open_guide_window") },
+  { label: "自动演引导（4 秒一步）", run: () => autoplayGuide() },
   { label: "模拟托盘锁定", run: () => host.trayLock() },
+  // 开场动画的真身是原生分层窗（src-tauri/src/splash.rs），浏览器里放不进来，
+  // 这颗钮演的是同参数的那份复刻（src/preview/splash-mock.ts）：
+  // 时长、环带宽窄、配色、reduce 档一致；**像素与 reveal 时序不在这儿验**。
+  // 不自动演：预览台里第一扇窗是秒出的，照真机口径一演就被收掉，看不出那条弧。
+  { label: "演一次开场（复刻）", run: () => playSplashMock() },
 ];
 
 export function PreviewStudio() {
@@ -129,7 +181,11 @@ export function PreviewStudio() {
           {frames.map((frame) => (
             <section
               key={frame.label}
-              className="absolute overflow-hidden rounded-md border border-black/25 bg-white shadow-[0_6px_18px_rgba(0,0,0,0.15)]"
+              // 那圈 1px 描边**必须画在盒子外**（shadow 的 0 偏移一圈），不能用 border：
+              // border-box 下 border 会从内容区偷走 2 像素，于是 iframe 永远比应用写进来的
+              // 窗高矮 2 像素——量到的"内容被裁"是替身窗自己的毛病，不是应用的。
+              // 真机那扇是无框窗，inner 就是内容，没有这一层
+              className="absolute overflow-hidden rounded-md bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.25),0_6px_18px_rgba(0,0,0,0.15)]"
               style={{
                 left: frame.rect.x,
                 top: frame.rect.y,

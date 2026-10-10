@@ -113,6 +113,8 @@ pub fn show_charging(app: &AppHandle, x: i32, y: i32, hold_ms: u32) -> AppResult
     let _ = window.set_ignore_cursor_events(true);
     place_at(&window, x as i64, y as i64)?;
     let _ = app.emit("ring:charging", hold_ms);
+    // 弧也是"星环露脸"：同样先叫开场窗收，理由见 `reveal`
+    crate::splash::dismiss(crate::splash::Reason::Revealed);
     let _ = window.show();
     Ok(())
 }
@@ -132,6 +134,9 @@ async fn reveal(app: &AppHandle, x: i32, y: i32) -> AppResult<()> {
     // 充电态把窗设成了鼠标穿透，绽开成盘就必须还回去：盘是要接左键的。
     // 每次开都在这里显式写一遍，不依赖"上一次一定收干净过"。
     let _ = window.set_ignore_cursor_events(false);
+    // 先叫开场窗收，再亮盘：两个都是 topmost，叠放次序由显示先后定——反过来的话
+    // 开机头一次长按出来的盘可能被那块还没收的画压住
+    crate::splash::dismiss(crate::splash::Reason::Revealed);
     let _ = window.show();
     let _ = window.set_focus();
     // 公告矩形给钩子判"盘外左键=收环"（读侧是原子量，回调不许查窗口）。

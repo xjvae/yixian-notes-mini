@@ -164,6 +164,23 @@ export function dataBackup(): Promise<string> {
   return invoke<string>("data_backup");
 }
 
+/**
+ * 开机启动：开没开。事实来源是 Windows 注册表的 Run 键（键不在 = 没开，也就是默认值）。
+ * 与「开机自动恢复桌面上的便签」是两条：那条管启动了之后摆不摆回便签，这条管启不启动应用。
+ */
+export function autostartGet(): Promise<boolean> {
+  return invoke<boolean>("autostart_get");
+}
+
+/**
+ * 设定开机启动，返回**实际生效**的状态（写不进去会抛错——被安全软件拦住的机器上，
+ * 界面必须退回原样并把原因说出来，不能画一个不成立的勾）。
+ * 成功后 Rust 侧同时刷托盘那一项的勾，并发 `AUTOSTART_CHANGED`。
+ */
+export function autostartSet(enabled: boolean): Promise<boolean> {
+  return invoke<boolean>("autostart_set", { enabled });
+}
+
 // —— 贴边 ——
 
 /** 注册贴边槽位，返回同侧序号（细丝错开用） */
@@ -251,6 +268,60 @@ export function openRingWindow(): Promise<void> {
 /** 收起星环（关 = 隐藏，下次秒开） */
 export function closeRingWindow(): Promise<void> {
   return invoke<void>("close_ring_window");
+}
+
+// —— 引导教程窗 ——
+
+/** 打开引导教程（十二步，分步点下一步） */
+export function openGuideWindow(): Promise<void> {
+  return invoke<void>("open_guide_window");
+}
+
+/**
+ * 讲星环那几步：报回**屏幕上那只环的真实中心**（逻辑像素 + 半径）。
+ * 气泡据此摆到它右边；屏上没有环时 Rust 才兜底开一只。
+ */
+export function guideShowRing(): Promise<{ cx: number; cy: number; half: number }> {
+  return invoke<{ cx: number; cy: number; half: number }>("guide_show_ring");
+}
+
+/** 离开讲环的那几步：闸门放下、环还开着就收掉 */
+export function guideReleaseRing(): Promise<void> {
+  return invoke<void>("guide_release_ring");
+}
+
+/**
+ * 托盘里我们那一格的矩形（**物理**像素），问不到就是 null。
+ * 图标是 `Shell_NotifyIcon` 注册的、没有句柄，Win32 拿不到它的矩形——Rust 那侧走
+ * UI Automation 问 Explorer（`tray.rs::icon_rect`）。
+ */
+export function trayRect(): Promise<{
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+} | null> {
+  return invoke<{ x: number; y: number; width: number; height: number } | null>(
+    "tray_rect",
+  );
+}
+
+/**
+ * 让 Rust **凑够** `want` 张虚拟演示便签（已有的不动，缺几张补几张），返回最后那张的窗 label。
+ * 1 张给讲单张的那几步，2 张给并叠那一步（桌上没有第二张时它自己会变一张出来，正文有明说）。
+ * 走完或跳过引导时由 `close_guide_window` 顺手销毁、不进回收站。
+ */
+export function guideDemoNote(want: number): Promise<string> {
+  return invoke<string>("guide_demo_note", { want });
+}
+
+/**
+ * 关掉引导教程（关 = 销毁：下次开都从第一步起）。
+ * 销账 `guide.seen=1` 由这条命令在 Rust 侧顺手做掉——窗上有 × 与 Esc 两条关法，
+ * 写在窗内就得两处各写一遍。
+ */
+export function closeGuideWindow(): Promise<void> {
+  return invoke<void>("close_guide_window");
 }
 
 // —— 口令窗 ——

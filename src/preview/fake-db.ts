@@ -44,13 +44,15 @@ export type WindowAction =
   | { kind: "close-panel"; label: string }
   | { kind: "note"; text: string };
 
-/** 后端广播：db:changed 与 store:private-changed 两条，逐条对着 Rust 的 emit 抄 */
+/** 后端广播：逐条对着 Rust 的 emit 抄 */
 export type Broadcast =
   | {
       event: "db:changed";
       payload: { writer: string; kind: "sticky" | "group" | "setting" };
     }
-  | { event: "store:private-changed"; payload: string };
+  | { event: "store:private-changed"; payload: string }
+  /** `ring.rs::reveal` 那一声。引导第一步就听它：他真把盘按出来了才翻页 */
+  | { event: "ring:open"; payload: null };
 
 export interface PreviewArgs extends Record<string, unknown> {
   id?: string;
@@ -110,6 +112,12 @@ const EXTERNALLY_HELD = new Set(["Alt+Space"]);
 const HOLD_MS_SETTING_KEY = "ring.trigger.hold_ms";
 const WHITELIST_SETTING_KEY = "hook.whitelist";
 const CHARGING_SETTING_KEY = "ring.charging";
+/** 与 `windows/guide.rs` 的 GUIDE_SEEN_KEY 同值：引导教程看过没有 */
+const GUIDE_SEEN_KEY = "guide.seen";
+/** 与 `windows/guide.rs` 的 GUIDE_DEMO_NOTE_KEY 同值：引导自己造的那张演示便签 */
+const GUIDE_DEMO_NOTE_KEY = "guide.demo_note";
+/** 浮窗 label 的前缀，与 `float.rs` 的 FLOAT_PREFIX 同值（引导拿它当摆位的认据） */
+const STICKY_LABEL_PREFIX = "sticky-";
 
 /** 与 db/query/media.rs 同值（改一边要同步另一边）：单张 5 MB、一张便签 20 张 */
 const MEDIA_MAX_BYTES = 5 * 1024 * 1024;
@@ -398,6 +406,11 @@ export class FakeDb {
   /** 与 input/mod.rs 同默认：开。关掉是"长按过程零反馈" */
   private hookCharging = true;
   private hookWhitelist: string[] = [];
+  /**
+   * 开机启动。真机那份住在 Windows 注册表的 Run 键里（库里没有这一项），预览台没有注册表，
+   * 就存内存：默认关，与真机"键不在 = 没开"同一个起点。
+   */
+  private autostartOn = false;
   /** media 表（0005_media.sql）。id 形状照 support/id.rs::media()：m + 十六进制 */
   private media = new Map<string, MediaRecord>();
   private mediaSeq = 0;
@@ -492,6 +505,68 @@ export class FakeDb {
   private note(text: string): void {
     this.log.unshift(text);
     this.log.length = Math.min(this.log.length, 80);
+  }
+
+  /** 库里记号里那些**还在**的演示便签 id（他自己删过就会留死记号，与 Rust 同一条对账） */
+  private liveDemoIds(): string[] {
+    const stored = this.settings.get(GUIDE_DEMO_NOTE_KEY) ?? "";
+    return stored
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s !== "" && this.stickies.has(s));
+  }
+
+  /** 把引导自己造的那几张硬删（连带它的图），并抹掉记号 */
+  private dropDemoNotes(): void {
+    const ids = this.liveDemoIds();
+    for (const id of ids) {
+      for (const [mediaId, record] of [...this.media.entries()]) {
+        if (record.noteId === id) this.media.delete(mediaId);
+      }
+      this.stickies.delete(id);
+      this.actions.push({ kind: "close-sticky", id });
+    }
+    if (ids.length > 0) {
+      this.settings.set(GUIDE_DEMO_NOTE_KEY, "");
+      this.note(`引导收尾：销毁 ${ids.length} 张演示便签（不进回收站）`);
+      this.emit("sticky", "guide");
+    }
+  }
+
+  /** 一张新便签的行（与 `float.rs::default_input` / `demo_input` 同一条形状）：
+   * 建的入口有两个（工具条那颗「新建便签」与引导的演示便签），行的形状只该有一份 */
+  private putStickyRow(id: string, title: string): void {
+    const now = nowMs();
+    this.stickies.set(id, {
+      id,
+      title,
+      body: "",
+      contentType: "text",
+      items: [],
+      timeline: [],
+      tags: [],
+      theme: "yellow",
+      icon: null,
+      pinned: true,
+      floating: true,
+      collapsed: false,
+      private: false,
+      groupId: null,
+      x: null,
+      y: null,
+      width: null,
+      height: null,
+      dueAt: null,
+      doneAt: null,
+      repeat: "none",
+      deleted: false,
+      deletedAt: null,
+      docked: false,
+      dockEdge: null,
+      autoSize: null,
+      createdAt: now,
+      updatedAt: now,
+    });
   }
 
   /** 与 db/query/sticky.rs::list 同序：updated_at DESC */
@@ -612,6 +687,18 @@ export class FakeDb {
       }
       case "data_backup":
         return `预览台没有真备份文件（假库）· ${new Date().toISOString()}`;
+
+      // —— 开机启动（autostart.rs：真机读写注册表的 Run 键，这里只有内存）——
+      case "autostart_get":
+        return this.autostartOn;
+      case "autostart_set": {
+        // 与真机同口径：返回**实际生效**的那一份，不是调用方传进来的愿望。
+        // 这里写内存必然成功——真机"注册表被安全软件拦住写不进去"那条失败演不出来，
+        // 别把这条当成"失败的界面回显已在预览台验过"
+        this.autostartOn = args.enabled === true;
+        this.note(`开机启动：${String(this.autostartOn)}`);
+        return this.autostartOn;
+      }
 
       // —— 便签与回收站（commands/entity.rs + db/query/sticky.rs）——
       case "sticky_upsert": {
@@ -876,37 +963,7 @@ export class FakeDb {
       // —— 窗口（commands/window.rs：产出动作，由宿主落成 iframe）——
       case "create_floating_sticky": {
         const id = `s-${nowMs().toString(36)}`;
-        const now = nowMs();
-        this.stickies.set(id, {
-          id,
-          title: "",
-          body: "",
-          contentType: "text",
-          items: [],
-          timeline: [],
-          tags: [],
-          theme: "yellow",
-          icon: null,
-          pinned: true,
-          floating: true,
-          collapsed: false,
-          private: false,
-          groupId: null,
-          x: null,
-          y: null,
-          width: null,
-          height: null,
-          dueAt: null,
-          doneAt: null,
-          repeat: "none",
-          deleted: false,
-          deletedAt: null,
-          docked: false,
-          dockEdge: null,
-          autoSize: null,
-          createdAt: now,
-          updatedAt: now,
-        });
+        this.putStickyRow(id, "");
         this.emit("sticky", writer);
         this.actions.push({ kind: "open-sticky", id });
         return id;
@@ -953,11 +1010,67 @@ export class FakeDb {
         // 预览台没有 OS 光标语义，就摆在画布左上——环本身的行为照样能验
         this.note("星环：预览台摆左上，真机落光标处（这条差异不看成 bug）");
         this.actions.push({ kind: "open-panel", label: "ring" });
+        // ring.rs::reveal 每次出盘都广播这一声（环窗拿它重放入场，引导第一步拿它翻页）
+        this.broadcasts.push({ event: "ring:open", payload: null });
         return null;
       case "close_ring_window":
         // 与 Rust 同口径：关 = 隐藏（星环要秒开，销毁再建 WebView 的代价落在按键到看见之间）
         this.actions.push({ kind: "close-panel", label: "ring" });
         return null;
+
+      // —— 引导窗（windows/guide.rs）——
+      case "open_guide_window":
+        this.actions.push({ kind: "open-panel", label: "guide" });
+        return null;
+      case "guide_show_ring": {
+        // 与 `guide.rs::show_ring` 同一条：把环开出来 + 报回**那只环的真实外框**。
+        // 预览台的环被 host.openPanel 摆在 (60,60)、边长 360，所以环心 (240,240)、半径 180——
+        // 这一组数是跟着那处摆位写死的，改了 host 那处要改这里。
+        // 这里**不**广播 ring:open：真机走到这条多半是"环已经在他手上了"（第一步就是等那一声），
+        // 只有兜底开环才 emit；预览台一律不报，省得和第一步的翻页信号撞成连翻两页
+        this.actions.push({ kind: "open-panel", label: "ring" });
+        this.note("引导：把星环真的开出来（环心 240,240，半径 180）");
+        return { cx: 240, cy: 240, half: 180 };
+      }
+      case "guide_release_ring":
+        // 与 Rust 同口径：闸门放下，环还开着就收掉
+        this.actions.push({ kind: "close-panel", label: "ring" });
+        this.note("引导：放开星环");
+        return null;
+      case "tray_rect":
+        // 真机这一条走 UI Automation 问 Explorer（`tray.rs::icon_rect`）：托盘图标没有句柄，
+        // Win32 拿不到矩形。预览台没有任务栏也没有我们的图标，给一个**摆在画布右下角的替身**，
+        // 为的是能验到"贴到那一格头上、箭头朝下"那条算术，而不是验 UIA 本身
+        this.note("托盘那一格：预览台给替身矩形（真机问 UIA，问不到就退右下角那一档）");
+        return { x: 1384, y: 852, width: 32, height: 40 };
+      case "close_guide_window": {
+        // 与真机同口径：销账写在 close 里。前端有两条关法（窗上的 × 与 Esc），
+        // 摆在窗内就得写两处，摆在这条命令上只有一处
+        this.settings.set(GUIDE_SEEN_KEY, "1");
+        // 引导自己造的那几张演示便签跟着走：硬删、不进回收站（与 commands/window.rs 同一条）
+        this.dropDemoNotes();
+        this.note("引导教程：销账 guide.seen=1");
+        this.actions.push({ kind: "close-panel", label: "guide" });
+        return null;
+      }
+      case "guide_demo_note": {
+        // 与 `commands/window.rs::guide_demo_note` 同一条：**凑够** `want` 张，已有的不动，
+        // 死记号（他自己删过、或上一趟没走到收尾）先抹。返回最后那张的窗 label
+        const want = Math.min(Math.max((args.want as number) ?? 1, 1), 4);
+        const ids = this.liveDemoIds();
+        while (ids.length < want) {
+          // 只有一张时不带编号，补出来的才编号（与 Rust 同一条口径）
+          const title = ids.length === 0 ? "引导演示" : `引导演示 ${ids.length + 1}`;
+          const id = `s-${nowMs().toString(36)}-${ids.length}`;
+          this.putStickyRow(id, title);
+          ids.push(id);
+          this.actions.push({ kind: "open-sticky", id });
+          this.note(`引导：放出「${title}」，共 ${ids.length} 张`);
+        }
+        this.settings.set(GUIDE_DEMO_NOTE_KEY, ids.join(","));
+        this.emit("sticky", "guide");
+        return `${STICKY_LABEL_PREFIX}${ids[ids.length - 1]}`;
+      }
 
       // —— 贴边（windows/dock.rs 的槽位注册表：同边重复登记必须幂等）——
       case "float_dock_register": {

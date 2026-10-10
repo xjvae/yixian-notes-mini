@@ -122,6 +122,13 @@ pub fn foreground_name() -> Option<String> {
 /// 判成"取消"，盘内左键必须**不**判成取消——只有布尔就做不出这个区分：盘驻留时
 /// 任何一次左键（包括点格子那一下）都会先被当成盘外，症状是"点节点没反应，环却收了"。
 static RING_PRESENT: AtomicBool = AtomicBool::new(false);
+/// 引导教程正指着盘讲（第二、三步）——那期间**盘外左键不收环**。
+///
+/// 为什么要这一道：气泡是盘外的一扇小窗，点它上面的「下一步」就是一次数标外的左键，
+/// 按平时的规则那一下会把环收掉。症状是作者报的"第二步闪星环盘"：环刚出来，
+/// 他点一下推进，环没了，下一步的气泡又指着空气。
+/// 盘内那一下照常收环（点格子本来就该收），所以闸门只加在盘外那一条上。
+static GUIDE_HOLDS_RING: AtomicBool = AtomicBool::new(false);
 static RING_LEFT: AtomicI32 = AtomicI32::new(0);
 static RING_TOP: AtomicI32 = AtomicI32::new(0);
 static RING_RIGHT: AtomicI32 = AtomicI32::new(0);
@@ -148,6 +155,15 @@ pub fn ring_hidden() {
 /// **同一个窗**改成鼠标穿透，那会把用户正在看的盘点掉。
 pub(crate) fn ring_present() -> bool {
     RING_PRESENT.load(Ordering::Relaxed)
+}
+
+/// 引导期间要不要放过"盘外左键收环"那一条。
+pub fn set_guide_holds_ring(on: bool) {
+    GUIDE_HOLDS_RING.store(on, Ordering::Relaxed);
+}
+
+pub(crate) fn guide_holds_ring() -> bool {
+    GUIDE_HOLDS_RING.load(Ordering::Relaxed)
 }
 
 /// 物理屏幕坐标是否落在盘内。**无锁**：回调里调用。
