@@ -268,6 +268,11 @@ export interface HookStatus {
 export const DB_CHANGED = "db:changed";
 export const PRIVATE_CHANGED = "store:private-changed";
 /**
+ * 口令窗被关掉（解锁成功收尾也算）。负载是它的 label。
+ * 挂起的删除动作靠这条收口：见 `src/window/private-gate.ts`。
+ */
+export const UNLOCK_DISMISSED = "unlock:dismissed";
+/**
  * 开机启动翻了（托盘那一条勾也会发它）。负载就是新的实际状态。
  * 事实来源是 Windows 注册表，不是库：这条只是"去重读一遍"的通知。
  */

@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { StickyInput, StickyNote } from "@/platform/contracts";
 import { createDefaultSticky } from "@/data/entities";
 import { withPrivateLayer } from "@/store/private-backend";
-import { sealedRevert, sealedRevisions } from "@/store/private-backend";
+import { sealedRevert, sealedRevisions, dropSealed } from "@/store/private-backend";
 import type { NotesBackend } from "@/store/backend";
 
 /** private-state 的缓存位（界面遮罩用它）：用例故意让它与 authority 不一致 */
@@ -15,6 +15,8 @@ const cache = { active: false, unlocked: false };
 /** Rust 的权威状态，即 privateStatus 的返回值 */
 const authority = { configured: false, unlocked: false };
 const savedMaps: string[] = [];
+/** 行删除与封套写盘的先后（硬删那条路要"先删行再清套"，顺序是契约的一部分） */
+const order: string[] = [];
 
 /** 缓存与权威一致的摆位（大多数用例用这个） */
 function layer(active: boolean, unlocked: boolean): void {
@@ -35,6 +37,7 @@ vi.mock("@/platform/commands", () => ({
   privateLoad: vi.fn(() => Promise.resolve(JSON.stringify(sealedOnDisk))),
   privateSave: vi.fn((data: string) => {
     savedMaps.push(data);
+    order.push("save");
     // 真机 privateSave 是整份覆盖，这里也照覆盖：不这么做，"写完再读"那条用例
     // 读到的还是播种时那份，回滚路径就永远测不到自己写进去的东西
     putDisk(JSON.parse(data) as Record<string, unknown>);
@@ -73,6 +76,7 @@ class FakeBackend implements NotesBackend {
   }
   remove(id: string, hard: boolean): Promise<void> {
     this.removals.push({ id, hard });
+    order.push("row");
     if (hard) this.rows.delete(id);
     return Promise.resolve();
   }
@@ -83,6 +87,7 @@ let inner: FakeBackend;
 beforeEach(() => {
   layer(false, false);
   savedMaps.length = 0;
+  order.length = 0;
   putDisk({
     s1: {
       title: "加密的真身标题",
@@ -236,6 +241,103 @@ describe("硬删", () => {
     layer(true, true);
     const backend = withPrivateLayer(inner);
     await backend.remove("s1", false);
+    expect(savedMaps.length).toBe(0);
+  });
+
+  it("先删行、再清套：断在一半留下的是孤儿条目而不是空壳便签", async () => {
+    layer(true, true);
+    const backend = withPrivateLayer(inner);
+    await backend.bootstrap();
+    order.length = 0;
+    await backend.remove("s1", true);
+    expect(order).toEqual(["row", "save"]);
+  });
+
+  it("锁着硬删：不碰封套（读不到内容，也就无从判断该删哪条）", async () => {
+    layer(true, false);
+    const backend = withPrivateLayer(inner);
+    await backend.remove("s1", true);
+    expect(savedMaps.length).toBe(0);
+    expect(sealedOnDisk.s1).toBeDefined();
+  });
+});
+
+/** 回收站"一键清空"那条路：Rust 侧整批 DELETE，不经过包装层，条目靠 dropSealed 摘 */
+describe("批量摘封套条目", () => {
+  it("按 id 摘掉命中的那些，没命中就一次盘都不多写", async () => {
+    layer(true, true);
+    putDisk({
+      s1: {
+        title: "甲",
+        body: "",
+        contentType: "text",
+        items: [],
+        timeline: [],
+        tags: [],
+      },
+    });
+    await dropSealed(["s1"]);
+    expect(savedMaps.length).toBe(1);
+    expect((JSON.parse(savedMaps[0]) as Record<string, unknown>).s1).toBeUndefined();
+    await dropSealed(["不存在的那张"]);
+    expect(savedMaps.length).toBe(1);
+  });
+});
+
+/**
+ * 孤儿收割：硬删曾经绕过包装层（回收站直接打 IPC），封套里就留下了谁也读不到的真身。
+ * 判据是"stickies 表里连一行都没有"，所以回收站里那些（软删、还能恢复）不许动。
+ */
+describe("启动时收割孤儿", () => {
+  it("封套里有、库里一行都没有的被清掉；软删那张留着", async () => {
+    layer(true, true);
+    putDisk({
+      s1: {
+        title: "在册",
+        body: "",
+        contentType: "text",
+        items: [],
+        timeline: [],
+        tags: [],
+      },
+      s9x: {
+        title: "回收站里",
+        body: "",
+        contentType: "text",
+        items: [],
+        timeline: [],
+        tags: [],
+      },
+      s9: {
+        title: "孤儿",
+        body: "",
+        contentType: "text",
+        items: [],
+        timeline: [],
+        tags: [],
+      },
+    });
+    inner.rows.set("s9x", note("s9x", { private: true, deleted: true }));
+    const backend = withPrivateLayer(inner);
+    await backend.bootstrap();
+    expect(savedMaps.length).toBe(1);
+    const map = JSON.parse(savedMaps[0]) as Record<string, unknown>;
+    expect(map.s9).toBeUndefined();
+    expect(map.s1).toBeDefined();
+    expect(Object.keys(map)).toContain("s9x");
+  });
+
+  it("锁着不收割：读不到内容就无从判断谁真的没了", async () => {
+    layer(true, false);
+    const backend = withPrivateLayer(inner);
+    await backend.bootstrap();
+    expect(savedMaps.length).toBe(0);
+  });
+
+  it("没配过口令也不收割（直通态，封套本来就没在用）", async () => {
+    layer(false, false);
+    const backend = withPrivateLayer(inner);
+    await backend.bootstrap();
     expect(savedMaps.length).toBe(0);
   });
 });

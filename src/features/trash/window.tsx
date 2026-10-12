@@ -3,11 +3,13 @@
 // 「彻底删除」与「一键清空」都真删、不可恢复——共用同一段两段确认（第一击变确认键，
 // 3 秒不点自动退回），所以同一时刻只可能亮起一颗确认键。
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RotateCcw, Trash2, X } from "lucide-react";
 import { WindowChrome } from "@/ui/window-chrome";
 import { displayTitle, noteTypeLabel } from "@/data/note-types";
 import { themeOf } from "@/data/theme";
+import { dropSealed } from "@/store/private-backend";
+import { requirePrivateUnlock } from "@/window/private-gate";
 import {
   closeTrashWindow,
   stickyDelete,
@@ -73,6 +75,15 @@ export function TrashWindow() {
     });
   }, []);
 
+  // 回收站里有哪些是私密便签（行上的 private 标记就在主库里，锁着也读得到）
+  const privateIds = useMemo(
+    () => (rows ?? []).filter((row) => row.private).map((row) => row.id),
+    [rows],
+  );
+
+  // 彻底删除要过口令门：单行只在那张是私密时问，一键清空合并问一次。
+  // 门后先删行、再摘封套里的真身——这两条路以前直接打 IPC，行没了而 private.json
+  // 里那条加密内容一直留着，谁也清不掉它。
   const handleHardDelete = useCallback(
     (target: string) => {
       if (confirmingId !== target) {
@@ -83,13 +94,20 @@ export function TrashWindow() {
       }
       if (confirmTimer.current !== null) clearTimeout(confirmTimer.current);
       setConfirmingId(null);
-      // 哨兵键那一支清的是整个回收站（所有软删行连图），别的只清这一行
-      const gone = target === CLEAR_ALL ? trashClearAll() : stickyDelete(target, true);
-      gone.catch((error: unknown) => {
-        setLoadError(String(error));
-      });
+      const ids = target === CLEAR_ALL ? privateIds : [target];
+      const act = async (): Promise<void> => {
+        // 哨兵键那一支清的是整个回收站（所有软删行连图），别的只清这一行
+        if (target === CLEAR_ALL) await trashClearAll();
+        else await stickyDelete(target, true);
+        await dropSealed(ids);
+      };
+      const gated =
+        target === CLEAR_ALL ? privateIds.length > 0 : privateIds.includes(target);
+      void (gated ? requirePrivateUnlock(act) : act()).catch((error: unknown) =>
+        setLoadError(String(error)),
+      );
     },
-    [confirmingId],
+    [confirmingId, privateIds],
   );
 
   const deleted = rows ?? [];

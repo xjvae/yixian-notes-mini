@@ -51,6 +51,8 @@ export type Broadcast =
       payload: { writer: string; kind: "sticky" | "group" | "setting" };
     }
   | { event: "store:private-changed"; payload: string }
+  /** `unlock.rs::close` 那一声：口令窗没了。挂起的删除动作靠它收口，见 private-gate.ts */
+  | { event: "unlock:dismissed"; payload: string }
   /** `ring.rs::reveal` 那一声。引导第一步就听它：他真把盘按出来了才翻页 */
   | { event: "ring:open"; payload: null };
 
@@ -1209,6 +1211,9 @@ export class FakeDb {
         return null;
       case "close_unlock_window":
         this.actions.push({ kind: "close-panel", label: "unlock" });
+        // 与 unlock.rs::close 同一条：destroy 之后广播"窗没了"。挂起的删除动作靠它收口
+        // （解锁成功也是这扇窗自己关的，所以收到之后还要读一次权威状态）
+        this.broadcasts.push({ event: "unlock:dismissed", payload: "unlock" });
         return null;
       case "open_ring_window":
         // 真机每次开在光标处（ring.rs::place_at_cursor 走 GetCursorPos + 工作区夹回），

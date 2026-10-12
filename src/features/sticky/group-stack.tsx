@@ -61,6 +61,7 @@ import {
 } from "@/window/identity";
 import { useStickyPing } from "@/window/use-sticky-ping";
 import { useNoteActivity } from "@/window/use-note-activity";
+import { requirePrivateUnlock } from "@/window/private-gate";
 import { type DockTarget, useDockSnap } from "@/window/use-dock-snap";
 import { DockSliver } from "@/window/dock-sliver";
 import type { DockEdge } from "@/platform/contracts";
@@ -316,17 +317,20 @@ export function GroupStackWindow() {
     })();
   }, [gid]);
 
+  // 与单窗同一条门：删的是私密那一张就先要口令（叠窗里一张一张删，挂起的也就是这一张）
   const handleDelete = useCallback((): void => {
     if (shownId === null) return;
-    void (async () => {
+    const act = async () => {
       try {
         await flushNow();
         await removeNote(shownId);
       } catch (error) {
         logger.caught(SCOPE, "删除前落盘失败，仍继续删", error);
       }
-    })();
-  }, [shownId]);
+    };
+    const run = shown?.private === true ? requirePrivateUnlock(act) : act();
+    run.catch((error: unknown) => logger.caught(SCOPE, "删除便签失败", error));
+  }, [shownId, shown?.private]);
 
   if (gid === null) {
     return (

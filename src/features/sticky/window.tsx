@@ -25,6 +25,7 @@ import { type DockTarget, useDockSnap } from "@/window/use-dock-snap";
 import { useAutoSize } from "@/window/use-auto-size";
 import { DockSliver } from "@/window/dock-sliver";
 import { useDragToGroup } from "@/window/drag-to-group";
+import { requirePrivateUnlock } from "@/window/private-gate";
 import { useNote } from "@/store/hooks";
 import { useAutoSizeDefault } from "@/data/auto-size-default";
 import { flushNow, updateNote } from "@/store/notes-store";
@@ -262,9 +263,10 @@ export function StickyWindow() {
     updateNote(id, { collapsed: false });
   }, [id, note, minimized]);
 
+  // 私密便签先过口令门：锁着时弹口令窗，解锁成功再把这一刀补完；非私密照旧直接走
   const handleDelete = useCallback(() => {
     if (id === null) return;
-    void (async () => {
+    const act = async () => {
       try {
         await flushNow();
         await removeNoteAndFlush(id);
@@ -272,8 +274,10 @@ export function StickyWindow() {
         logger.caught(SCOPE, "删除前落盘失败，仍继续关窗", error);
       }
       await closeFloatingSticky(id);
-    })();
-  }, [id]);
+    };
+    const run = note?.private === true ? requirePrivateUnlock(act) : act();
+    run.catch((error: unknown) => logger.caught(SCOPE, "删除便签失败", error));
+  }, [id, note?.private]);
 
   if (id === null) {
     return (

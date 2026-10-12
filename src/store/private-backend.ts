@@ -162,8 +162,24 @@ export function withPrivateLayer(inner: NotesBackend): NotesBackend {
 
   return {
     async bootstrap() {
-      await syncSealed();
+      const status = await syncSealed();
       const rows = await inner.bootstrap();
+      // 收割孤儿：封套里有、stickies 表里连一行都没有（回收站里也没有）的那些条目。
+      // 硬删曾经绕过本包装层（回收站直接打 IPC），那阵漏下的真身就在这一次被清掉。
+      // 只在解锁态做：锁着读不到内容，也就无从判断谁是真的没了。
+      if (status.configured && status.unlocked && Object.keys(sealed).length > 0) {
+        const alive = new Set((await inner.list(true)).map((row) => row.id));
+        const orphans = Object.keys(sealed).filter((id) => !alive.has(id));
+        if (orphans.length > 0) {
+          for (const id of orphans) delete sealed[id];
+          try {
+            await saveSealed();
+            logger.info(SCOPE, `清掉 ${orphans.length} 条没有对应便签的私密内容`);
+          } catch (error) {
+            logger.caught(SCOPE, "收割孤儿条目失败（下次启动再试）", error);
+          }
+        }
+      }
       return rows.map((row) => (row.private ? mergeSealed(row, sealed) : row));
     },
 
@@ -207,7 +223,9 @@ export function withPrivateLayer(inner: NotesBackend): NotesBackend {
     },
 
     async remove(id, hard) {
-      // 真删一张私密便签：密封套里的真身一并带走（软删不动，恢复后还在）
+      // 先删行、再清套：反过来万一中间断在一半，留下的是"行已经没了意义、真身也拿不回来"
+      // 的空壳，比留一条孤儿条目糟得多。（软删不动封套——从回收站恢复后内容还得在。）
+      await inner.remove(id, hard);
       if (hard) {
         const status = await syncSealed();
         if (status.configured && status.unlocked && id in sealed) {
@@ -219,7 +237,6 @@ export function withPrivateLayer(inner: NotesBackend): NotesBackend {
           }
         }
       }
-      return inner.remove(id, hard);
     },
   };
 }
@@ -261,4 +278,20 @@ export async function sealedRevert(id: string, seq: number): Promise<SealedConte
   };
   await privateSave(JSON.stringify(map));
   return target.content;
+}
+
+/**
+ * 批量摘掉封套里的条目（连它们那一串版本）。回收站"一键清空"那一条路用它——
+ * 那是 Rust 侧的整批 DELETE，不经过本文件的包装层，不在这里动手就没人动手。
+ *
+ * 调用时机：**行删完之后**。锁着会由 `privateLoad` 抛 `PRIVATE_LOCKED`，原样抛给
+ * 调用方：走到这里说明口令门已经过了，状态却对不上，不该静默放过。
+ */
+export async function dropSealed(ids: readonly string[]): Promise<void> {
+  if (ids.length === 0) return;
+  const map = await readMap();
+  const hit = ids.filter((id) => id in map);
+  if (hit.length === 0) return;
+  for (const id of hit) delete map[id];
+  await privateSave(JSON.stringify(map));
 }
