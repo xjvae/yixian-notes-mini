@@ -8,6 +8,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::support::error::{AppError, AppResult};
 use crate::windows::factory::{build_window, WindowSpec};
+use crate::windows::monitor;
 
 pub const UNLOCK_LABEL: &str = "unlock";
 const UNLOCK_ENTRY: &str = "unlock.html";
@@ -19,8 +20,10 @@ pub async fn open(app: &AppHandle) -> AppResult<()> {
         url: UNLOCK_ENTRY.into(),
         title: "一闲笔记 · 私密密码".into(),
         size: UNLOCK_SIZE,
-        // 解锁窗是一次性的、不参与位置记忆（frames::is_tracked 不认它）：出生位置交回系统
-        position: None,
+        // 解锁窗是一次性的、不参与位置记忆（frames::is_tracked 不认它）：那就每次自己
+        // 找地方——落在光标所在那块屏的工作区正中。交回系统摆的话，同一台机器上它
+        // 每次出现的位置都不一样，而这是一扇要人打字输入的窗。
+        position: monitor::spawn_centered(UNLOCK_SIZE, (0.0, 0.0)),
         min_size: Some((360.0, 400.0)),
         transparent: false,
         always_on_top: true,

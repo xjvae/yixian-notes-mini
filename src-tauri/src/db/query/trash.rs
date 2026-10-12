@@ -14,8 +14,13 @@ const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 pub fn purge_expired(db: &Db, retention_days: i64, now: i64) -> AppResult<i64> {
     let cutoff = now - retention_days * DAY_MS;
     let conn = db.lock();
-    // 图先走。这条批量清算不枚举 id（一句 DELETE 完事），所以 media 得用**同一个条件**
-    // 自己挑一遍：漏了就是每 30 天留一堆没人再看得见的孤儿字节
+    // 图与历史版本先走。这条批量清算不枚举 id（一句 DELETE 完事），所以两张表都得用
+    // **同一个条件**自己挑一遍：漏了就是每 30 天留一堆没人再看得见的孤儿字节与孤儿版本
+    conn.execute(
+        "DELETE FROM sticky_revisions WHERE note_id IN \
+         (SELECT id FROM stickies WHERE deleted = 1 AND deleted_at IS NOT NULL AND deleted_at < ?1)",
+        [cutoff],
+    )?;
     conn.execute(
         "DELETE FROM media WHERE note_id IN \
          (SELECT id FROM stickies WHERE deleted = 1 AND deleted_at IS NOT NULL AND deleted_at < ?1)",
@@ -25,6 +30,24 @@ pub fn purge_expired(db: &Db, retention_days: i64, now: i64) -> AppResult<i64> {
         "DELETE FROM stickies WHERE deleted = 1 AND deleted_at IS NOT NULL AND deleted_at < ?1",
         [cutoff],
     )?;
+    Ok(changed as i64)
+}
+
+/// 一键清空：把**所有**软删行连图一起真删，返回清掉的条数。
+/// 与 purge_expired 同一条路——不枚举 id，media 用同一个条件的子查询自己挑一遍；
+/// 差别只在这里不看删除时钟，躺了几天都算数。
+pub fn clear(db: &Db) -> AppResult<i64> {
+    let conn = db.lock();
+    conn.execute(
+        "DELETE FROM sticky_revisions WHERE note_id IN \
+         (SELECT id FROM stickies WHERE deleted = 1)",
+        [],
+    )?;
+    conn.execute(
+        "DELETE FROM media WHERE note_id IN (SELECT id FROM stickies WHERE deleted = 1)",
+        [],
+    )?;
+    let changed = conn.execute("DELETE FROM stickies WHERE deleted = 1", [])?;
     Ok(changed as i64)
 }
 
@@ -150,5 +173,38 @@ mod tests {
         assert!(row.floating);
         assert!(!row.collapsed);
         assert!(!restore(&db, "s1").expect("二次恢复"), "未删行恢复返回 false");
+    }
+
+    /// 一键清空不看删除时钟：刚删的、躺了 40 天的都要走，没删的一张不许动，
+    /// 走掉的那张的图要跟着没（同 purge_expired 那条孤儿字节纪律）
+    #[test]
+    fn 清空把所有软删行连图带走_没删的不动() {
+        let db = db_with_schema();
+        sticky::upsert(&db, input("fresh")).expect("写 fresh");
+        sticky::upsert(&db, input("old")).expect("写 old");
+        sticky::upsert(&db, input("alive")).expect("写 alive");
+        media::save(&db, &picture("m-old", "old")).expect("old 的图");
+        media::save(&db, &picture("m-alive", "alive")).expect("alive 的图");
+        let now = sticky::now_ms();
+        assert!(sticky::delete(&db, "fresh", false).expect("软删"));
+        assert!(sticky::delete(&db, "old", false).expect("软删"));
+        age_deleted_at(&db, "old", now, 40);
+
+        let cleared = clear(&db).expect("清空");
+        assert_eq!(cleared, 2, "软删几张清几张，与躺了几天无关");
+        assert!(sticky::get(&db, "fresh").expect("读").is_none());
+        assert!(sticky::get(&db, "old").expect("读").is_none());
+        assert!(sticky::get(&db, "alive").expect("读").is_some(), "没删的一张不许动");
+        assert_eq!(
+            media::count_for_note(&db, "old").expect("数"),
+            0,
+            "清空要带走图，不然就是永久孤儿字节"
+        );
+        assert_eq!(
+            media::count_for_note(&db, "alive").expect("数"),
+            1,
+            "留在桌面的那张的图不许跟着没"
+        );
+        assert_eq!(clear(&db).expect("二次清空"), 0, "空的回收站清掉 0 张");
     }
 }

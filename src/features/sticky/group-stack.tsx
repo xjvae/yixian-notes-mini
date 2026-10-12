@@ -60,6 +60,7 @@ import {
   getStickyFocusId,
 } from "@/window/identity";
 import { useStickyPing } from "@/window/use-sticky-ping";
+import { useNoteActivity } from "@/window/use-note-activity";
 import { type DockTarget, useDockSnap } from "@/window/use-dock-snap";
 import { DockSliver } from "@/window/dock-sliver";
 import type { DockEdge } from "@/platform/contracts";
@@ -106,6 +107,8 @@ export function GroupStackWindow() {
   );
   /** 收起栏上的到期角标按时钟分档（与单窗同一条），渲染期不许直接取 Date.now() */
   const now = useNow();
+  /** 私密层自动上锁的"这扇窗里刚有人动过"上报，与单窗各挂一份 */
+  useNoteActivity();
   /**
    * 改组合名。名字今天只在"拖两张到一起"那一刻抄第一张的标题，之后没有任何改的地方
    * （作者报的这条）。草稿取 `group.name` 原文，输入框硬顶 `GROUP_NAME_MAX`；

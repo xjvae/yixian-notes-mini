@@ -177,7 +177,11 @@ export function PreviewStudio() {
       </header>
 
       <div className="flex min-h-0 flex-1">
-        <div ref={layerRef} className="relative min-w-0 flex-1 overflow-hidden">
+        <div
+          data-preview-layer=""
+          ref={layerRef}
+          className="relative min-w-0 flex-1 overflow-hidden"
+        >
           {frames.map((frame) => (
             <section
               key={frame.label}

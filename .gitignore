@@ -11,3 +11,11 @@ src-tauri/gen/
 # 逐轮工程记录：只留本地，不进仓库（里面全是这台机器的现场笔记与复盘）
 ROADMAP.md
 ARCHITECTURE.md
+
+# 安装向导素材的原料图与中间副本：只留本地。要进仓库的是成品——两张 24 位 BMP 在
+# src-tauri/icons/，设计稿真正引用的预览 PNG（installer-header/sidebar、sidebar-bottom-4x）
+# 和两份裁图脚本在 docs/assets/。ref-* 那几张是 1.4–3.4 MB 的全尺寸输入图，
+# *.bmp 是 icons/ 那两份的副本，仓库里放一份就够。
+docs/assets/ref-*
+docs/assets/*.bmp
+便签软件界面图生成需求*

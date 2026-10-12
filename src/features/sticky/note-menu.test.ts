@@ -14,10 +14,11 @@ const ids = (hit: MenuHit, note = single) => menuFor(hit, note).map((a) => a.id)
 const labels = (hit: MenuHit, note = single) => menuFor(hit, note).map((a) => a.label);
 
 describe("menuFor 通用尾巴", () => {
-  it("空白处右键 = 就那五项，删除便签在最后", () => {
+  it("空白处右键 = 就那六项，删除便签在最后", () => {
     expect(ids({ kind: "note" })).toEqual([
       "add-image",
       "copy-body",
+      "history",
       "toggle-private",
       "toggle-collapse",
       "delete-note",
@@ -28,6 +29,7 @@ describe("menuFor 通用尾巴", () => {
     expect(ids({ kind: "note" }, { ...single, canCollapse: false })).toEqual([
       "add-image",
       "copy-body",
+      "history",
       "toggle-private",
       "delete-note",
     ]);
@@ -48,6 +50,21 @@ describe("menuFor 通用尾巴", () => {
     expect(dangerous.map((a) => a.id)).toEqual(["delete-note"]);
     expect(actions.at(-1)?.id).toBe("delete-note");
   });
+
+  /**
+   * 私密便签也有这一项（作者拍的）：私密的版本住封套里，锁着读不到，
+   * 但入口不分对象——"给了点开空表"的顾虑由面板的锁态负责，不由菜单负责。
+   */
+  it("历史版本不分私密，尾巴那一串照旧", () => {
+    expect(ids({ kind: "note" }, { ...single, isPrivate: true })).toEqual([
+      "add-image",
+      "copy-body",
+      "history",
+      "toggle-private",
+      "toggle-collapse",
+      "delete-note",
+    ]);
+  });
 });
 
 describe("menuFor 随对象变", () => {
@@ -57,6 +74,7 @@ describe("menuFor 随对象变", () => {
       "separator",
       "add-image",
       "copy-body",
+      "history",
       "toggle-private",
       "toggle-collapse",
       "delete-note",
@@ -72,6 +90,7 @@ describe("menuFor 随对象变", () => {
       "separator",
       "add-image",
       "copy-body",
+      "history",
       "toggle-private",
       "toggle-collapse",
       "delete-note",
@@ -95,6 +114,7 @@ describe("menuFor 随对象变", () => {
       "separator",
       "add-image",
       "copy-body",
+      "history",
       "toggle-private",
       "toggle-collapse",
       "delete-note",
@@ -113,6 +133,7 @@ describe("menuFor 随对象变", () => {
       "separator",
       "add-image",
       "copy-body",
+      "history",
       "toggle-private",
       "toggle-collapse",
       "delete-note",
@@ -162,6 +183,7 @@ describe("menuFor 随对象变", () => {
       "separator",
       "add-image",
       "copy-body",
+      "history",
       "toggle-private",
       "toggle-collapse",
       "delete-note",

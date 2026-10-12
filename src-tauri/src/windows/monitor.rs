@@ -31,6 +31,19 @@ impl WorkArea {
         let max_y = (self.y + self.height - height).max(self.y);
         (point.0.clamp(self.x, max_x), point.1.clamp(self.y, max_y))
     }
+
+    /// 一块 `width × height`（物理像素）在本矩形里**居中**的左上角。
+    /// 奇数尺寸差的那一像素归右下（整数除法向下取整），不影响观感，只要稳定就行。
+    pub fn center_block(&self, width: i64, height: i64) -> (i64, i64) {
+        self.clamp_block(
+            (
+                self.x + (self.width - width) / 2,
+                self.y + (self.height - height) / 2,
+            ),
+            width,
+            height,
+        )
+    }
 }
 
 /// 一块屏的**整块**物理矩形与它自己的缩放。
@@ -152,6 +165,43 @@ pub fn at(point: (i64, i64)) -> Option<WorkArea> {
     Some(area)
 }
 
+/// 当前光标位置（物理像素）。失败返回 None，由调用方退回默认摆位
+pub fn cursor() -> Option<(i64, i64)> {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    let mut point = POINT { x: 0, y: 0 };
+    // SAFETY：GetCursorPos 只往 &mut point 写两个 LONG，无其它输入；
+    // 返回值判 BOOL，FALSE 时不读 point 的内容。
+    let ok = unsafe { GetCursorPos(&mut point) }.is_ok();
+    ok.then_some((point.x as i64, point.y as i64))
+}
+
+/// 一扇窗的**出生位置**：光标所在那块屏的**工作区**正中，再按 `offset_logical`
+/// （逻辑像素）向右下错开。尺寸同样按逻辑像素给，内部按那块屏自己的缩放换算。
+///
+/// 为什么居中要按工作区而不是整块屏：任务栏占的那一条也算地方，按整块屏居中
+/// 会把窗的下沿压到任务栏底下，看着就不是居中。
+/// 为什么按光标所在屏：多屏时手在哪块屏，窗就该出现在哪块屏；只有一块屏时，
+/// 与"主屏居中"是同一个答案。
+///
+/// 问不到（屏表缓存还没刷出来、或者根本没有显示器）就给 `None`，交回系统摆——
+/// 与 `guide.rs::placement` 同一条兜底口径，宁可位置普通也不要跳到别的屏。
+pub fn spawn_centered(
+    size_logical: (f64, f64),
+    offset_logical: (f64, f64),
+) -> Option<(f64, f64)> {
+    let point = cursor()?;
+    let work = at(point)?;
+    let scale = at_physical(point.0, point.1)?.scale;
+    let width = (size_logical.0 * scale).round() as i64;
+    let height = (size_logical.1 * scale).round() as i64;
+    let (x, y) = work.center_block(width, height);
+    Some((
+        x as f64 / scale + offset_logical.0,
+        y as f64 / scale + offset_logical.1,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Screen, WorkArea};
@@ -173,6 +223,47 @@ mod tests {
         assert_eq!(area().clamp_block((100, 1030), 420, 420), (100, 620));
         // 块比工作区还大时不许 panic，也不许负到看不见的地方
         assert_eq!(area().clamp_block((500, 500), 4000, 4000), (0, 0));
+    }
+
+    #[test]
+    fn 居中落点算的是工作区不是整块屏() {
+        // 他这台：2560×1440，任务栏占 48 → 工作区 2560×1392。一张默认便签 320×300
+        let wide = WorkArea {
+            x: 0,
+            y: 0,
+            width: 2560,
+            height: 1392,
+        };
+        assert_eq!(wide.center_block(320, 300), (1120, 546));
+        // 口令窗 420×470
+        assert_eq!(wide.center_block(420, 470), (1070, 461));
+        // 按整块屏（1440）算会落到 570，那 24 像素就是被任务栏吃掉的那一截
+        assert_ne!(wide.center_block(320, 300).1, (1440 - 300) / 2);
+    }
+
+    #[test]
+    fn 副屏上的居中落点留在那块屏里() {
+        // 副屏挂在右边，物理工作区从 x=2560 起
+        let right = WorkArea {
+            x: 2560,
+            y: 0,
+            width: 1920,
+            height: 1040,
+        };
+        assert_eq!(right.center_block(320, 300), (3360, 370));
+        // 挂在左边的副屏：原点是负的，居中落点也必须是负的
+        let left = WorkArea {
+            x: -1920,
+            y: 0,
+            width: 1920,
+            height: 1040,
+        };
+        assert_eq!(left.center_block(320, 300), (-1120, 370));
+    }
+
+    #[test]
+    fn 窗比工作区还大时贴左上不许负到看不见() {
+        assert_eq!(area().center_block(4000, 4000), (0, 0));
     }
 
     #[test]

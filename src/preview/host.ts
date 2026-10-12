@@ -25,11 +25,30 @@ import {
   GROUP_PREFIX,
   HIDE_ON_CLOSE,
   PANEL_LABELS,
-  cascadePosition,
+  centerBlock,
   specOf,
+  spawnPosition,
   type FrameSpec,
   type Rect,
 } from "@/preview/window-specs";
+
+/**
+ * 预览台的"工作区"= 放窗的那块画布（宿主顶栏下面那块），不是整个视口：
+ * 按视口算会把窗算到画布底下看不见的一截里去。真机对应的是"光标所在屏减任务栏"，
+ * 预览台没有任务栏，缩放也没有，所以逻辑像素与画布像素同一数值。
+ * 画布还没挂上（首帧之前）就退回视口尺寸。
+ */
+function hostWorkArea(): Rect {
+  const box = document
+    .querySelector<HTMLElement>("[data-preview-layer]")
+    ?.getBoundingClientRect();
+  return {
+    x: 0,
+    y: 0,
+    width: Math.round(box?.width ?? window.innerWidth),
+    height: Math.round(box?.height ?? window.innerHeight),
+  };
+}
 
 export interface FrameHandle {
   spec: FrameSpec;
@@ -174,19 +193,21 @@ export class PreviewHost {
     const floats = [...this.frames.keys()].filter((l) =>
       l.startsWith(FLOAT_PREFIX),
     ).length;
-    const cascade = cascadePosition(floats);
-    const base: Rect = {
-      x: row.x ?? cascade.x,
-      y: row.y ?? cascade.y,
-      width: row.width ?? spec.size.width,
-      height: row.height ?? spec.size.height,
-    };
     // 收起那一档**连原生下限一起摘**（与 `float::mode_geometry` 同一条）：留着 220×200，
     // 那条 62 的栏会被当场夹回 200 —— 作者报的"收起态退出重开，尺寸不一致"就是它。
     const min = row.collapsed ? NO_MIN : spec.min;
-    const shaped = row.collapsed
-      ? { ...base, width: Math.min(base.width, BAR_MAX_WIDTH), height: BAR_HEIGHT }
-      : base;
+    // 尺寸先定，落点再按这一档尺寸居中（与 `float.rs::open_sticky` 同一个先后）
+    const size = row.collapsed
+      ? {
+          width: Math.min(row.width ?? spec.size.width, BAR_MAX_WIDTH),
+          height: BAR_HEIGHT,
+        }
+      : {
+          width: row.width ?? spec.size.width,
+          height: row.height ?? spec.size.height,
+        };
+    const born = spawnPosition(hostWorkArea(), size, floats);
+    const shaped: Rect = { x: row.x ?? born.x, y: row.y ?? born.y, ...size };
     this.add({
       label,
       kind: "sticky",
@@ -224,19 +245,21 @@ export class PreviewHost {
     const floats = [...this.frames.keys()].filter((l) =>
       l.startsWith(FLOAT_PREFIX),
     ).length;
-    const cascade = cascadePosition(floats);
-    const base: Rect = {
-      x: group.x ?? cascade.x,
-      y: group.y ?? cascade.y,
-      width: group.width ?? spec.size.width,
-      height: group.height ?? spec.size.height,
-    };
     // 与 float.rs::open_group_stack 同口径：收起态出生就是那条 62 高的栏、宽夹到 360，
     // 而且**连原生下限一起摘**（见 openSticky 那条注释）
     const min = group.collapsed ? NO_MIN : spec.min;
-    const shaped = group.collapsed
-      ? { ...base, width: Math.min(base.width, BAR_MAX_WIDTH), height: BAR_HEIGHT }
-      : base;
+    // 先后同单窗：尺寸先定，落点按这一档尺寸居中
+    const size = group.collapsed
+      ? {
+          width: Math.min(group.width ?? spec.size.width, BAR_MAX_WIDTH),
+          height: BAR_HEIGHT,
+        }
+      : {
+          width: group.width ?? spec.size.width,
+          height: group.height ?? spec.size.height,
+        };
+    const born = spawnPosition(hostWorkArea(), size, floats);
+    const shaped: Rect = { x: group.x ?? born.x, y: group.y ?? born.y, ...size };
     this.add(
       {
         label,
@@ -263,12 +286,16 @@ export class PreviewHost {
     const kind = PANEL_LABELS.find((panel) => panel.label === label)?.kind;
     if (kind === undefined) return;
     const spec = specOf(kind);
+    // 口令窗真机每次都落在光标那块屏的工作区正中（unlock.rs 走 monitor::spawn_centered）；
+    // 其余面板真机是把位置交回系统摆，这里用一个固定左上角代表"系统摆的"
+    const at =
+      kind === "unlock" ? centerBlock(hostWorkArea(), spec.size) : { x: 60, y: 60 };
     this.add({
       label,
       kind,
       entityId: null,
       entry: spec.entry,
-      rect: { x: 60, y: 60, width: spec.size.width, height: spec.size.height },
+      rect: { x: at.x, y: at.y, width: spec.size.width, height: spec.size.height },
       min: spec.min,
       title: spec.title,
     });

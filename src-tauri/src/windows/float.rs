@@ -11,6 +11,7 @@ use crate::support::error::{AppError, AppResult};
 use crate::support::id;
 use crate::windows::factory::{build_window, WindowSpec};
 use crate::windows::frames;
+use crate::windows::monitor;
 
 pub const FLOAT_PREFIX: &str = "sticky-";
 pub const GROUP_PREFIX: &str = "stickygrp-";
@@ -70,22 +71,24 @@ pub async fn open_sticky(app: &AppHandle, db: &Db, id: &str) -> AppResult<()> {
         // 带着"要看哪一张"进去：点结果/恢复点的就是这一张
         return open_group_stack(app, db, gid, Some(id)).await;
     }
-    let position = match (row.x, row.y) {
-        (Some(x), Some(y)) => (x as f64, y as f64),
-        _ => cascade_position(app),
-    };
-    // 收起态的行记的仍是展开尺寸：开机恢复按这一档开窗（尺寸与下限都归 `mode_geometry`）
+    // 尺寸先定：没摆过位时要按这档尺寸去算居中落点（收起档只有 62 高，
+    // 拿展开档去居中会把它顶到偏上的位置）
     let expand = (
         row.width.map(|v| v as f64).unwrap_or(DEFAULT_SIZE.0),
         row.height.map(|v| v as f64).unwrap_or(DEFAULT_SIZE.1),
     );
     let (size, min_size) = mode_geometry(row.collapsed, expand);
+    // 摆过位的行记的是它自己的位置，原样回去；没摆过位才居中起步 + 按开窗数错开
+    let position = match (row.x, row.y) {
+        (Some(x), Some(y)) => Some((x as f64, y as f64)),
+        _ => spawn_position(app, size),
+    };
     let spec = WindowSpec {
         label,
         url: MAIN_ENTRY.into(),
         title: "一闲便签".into(),
         size,
-        position: Some(position),
+        position,
         min_size,
         transparent: true,
         always_on_top: row.pinned,
@@ -180,23 +183,23 @@ pub async fn open_group_stack(
         }
         return Ok(());
     }
-    // 首次落点：groups 行记过就用（旧库导入带进来的摆位），没记过走级联。
+    // 首次落点：groups 行记过就用（旧库导入带进来的摆位），没记过就在光标那块屏的工作区
+    // 居中起步、按已开浮窗数错开。
     // 用户此后拖动/缩放的记忆落在 window_state（frames::is_tracked 认 stickygrp-*），
     // 由下面的 apply_saved 原样放回——groups 行不再是几何的活住址，只当出生点。
     //
     // 但 apply_saved 是"建完之后"才搬：窗已经可见了，于是先在出生点闪一下再跳到位。
     // 所以记住过就直接按那份**出生**（位置与尺寸都在建之前定），apply_saved 照旧
     // 再纠一次物理值——两者一致时那一写是空操作。
-    let (position, (group_w, group_h)) = match frames::saved_placement(app, &label) {
-        Some((saved_position, saved_size)) => (Some(saved_position), saved_size),
-        None => (
-            Some(group_position(app, db, gid)),
-            group_frame(db, gid)?,
-        ),
+    let (saved_position, expand) = match frames::saved_placement(app, &label) {
+        Some((position, size)) => (Some(position), size),
+        None => (None, group_frame(db, gid)?),
     };
     // 叠窗也有收起态（作者要的"给组合加最小化按钮"）：读组行那一列，其余与单窗同一条
     let collapsed = crate::db::query::group::get(db, gid)?.is_some_and(|row| row.collapsed);
-    let (size, min_size) = mode_geometry(collapsed, (group_w, group_h));
+    let (size, min_size) = mode_geometry(collapsed, expand);
+    // 居中要按最终这一档的尺寸算，所以它排在 mode_geometry 后面
+    let position = saved_position.or_else(|| group_position(app, db, gid, size));
     // 同一个布尔注入两份（几何 + 全局）不是重复：前端**首帧**就得知道自己该画哪一档。
     // 只给几何不给旗子，首帧会在那 62 高里画一整张正文，等 group_list 回来才改形状——
     // 而那一下正好发生在 reveal 之后，用户看见的就是"打开时抖了一下"。
@@ -260,24 +263,26 @@ fn group_frame(db: &Db, gid: &str) -> AppResult<(f64, f64)> {
     ))
 }
 
-/// 叠窗位置：组行记过就用，没记过按已有浮窗数级联
-fn group_position(app: &AppHandle, db: &Db, gid: &str) -> (f64, f64) {
+/// 叠窗位置：组行记过就用，没记过按居中落点
+fn group_position(app: &AppHandle, db: &Db, gid: &str, size: (f64, f64)) -> Option<(f64, f64)> {
     if let Ok(Some(row)) = crate::db::query::group::get(db, gid)
         && let (Some(x), Some(y)) = (row.x, row.y)
     {
-        return (x as f64, y as f64);
+        return Some((x as f64, y as f64));
     }
-    cascade_position(app)
+    spawn_position(app, size)
 }
 
-/// 没摆过位的便签按开窗数级联落点，一眼能看出是新开的
-fn cascade_position(app: &AppHandle) -> (f64, f64) {
+/// 没摆过位的便签/叠窗：落在光标所在那块屏的**工作区**正中（任务栏占的那一条不算地方），
+/// 再按已开浮窗数每张向右下错开 26 逻辑像素——一张压一张但都露着顶栏，一眼看得出是新开的。
+/// 问不到屏幕（屏表缓存还没刷出来）给 None，交回系统摆。
+fn spawn_position(app: &AppHandle, size: (f64, f64)) -> Option<(f64, f64)> {
     let count = app
         .webview_windows()
         .keys()
         .filter(|label| label.starts_with(FLOAT_PREFIX))
         .count() as f64;
-    (80.0 + count * 26.0, 90.0 + count * 26.0)
+    monitor::spawn_centered(size, (count * 26.0, count * 26.0))
 }
 
 /// 便签 id：`s…`

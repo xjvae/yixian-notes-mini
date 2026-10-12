@@ -19,12 +19,21 @@ import {
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
-import { ImagePlus, Lock, LockOpen, Maximize2, Minimize2, Trash2 } from "lucide-react";
+import {
+  History,
+  ImagePlus,
+  Lock,
+  LockOpen,
+  Maximize2,
+  Minimize2,
+  Trash2,
+} from "lucide-react";
 import { TYPE_ICONS } from "@/features/sticky/note-icons";
 import { IconPicker } from "@/features/sticky/icon-picker";
 import { BodyView } from "@/features/sticky/body-view";
 import { forgetMedia } from "@/features/sticky/use-media";
 import { ContextMenu } from "@/ui/context-menu";
+import { HistoryPanel } from "@/features/sticky/history-panel";
 import { LinkPrompt } from "@/ui/link-prompt";
 import { menuFor } from "@/features/sticky/note-menu";
 import { selectionRange } from "@/features/sticky/selection-range";
@@ -234,7 +243,7 @@ export function NoteContent({
   }, [id, note.private, priv.active, priv.unlocked]);
 
   // —— 右键菜单 ——
-  // 命中什么就给什么（判定在 note-menu.ts，纯函数），尾巴那五项不分对象一律给。
+  // 命中什么就给什么（判定在 note-menu.ts，纯函数），尾巴那几项不分对象一律给。
   // 叠窗里也照给，只是没有"收起为标题栏"那一档（onCollapse 不传）。
   const [menu, setMenu] = useState<{
     x: number;
@@ -242,6 +251,8 @@ export function NoteContent({
     actions: MenuAction[];
     hit: MenuHit;
   } | null>(null);
+  /** 「历史版本」那层窗内覆盖开没开（面板本身在 history-panel.tsx） */
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [flash, setFlash] = useState<string | null>(null);
   /** 右键"把选中变成链接"的第二步：就地填地址的那一小块 */
   const [linkDraft, setLinkDraft] = useState<{
@@ -550,6 +561,9 @@ export function NoteContent({
         // 记下目标那一条：选完文件回来时菜单早关了，只能靠这份（null = 加进正文）
         imageRowRef.current = hit?.kind === "row" ? hit.row : null;
         fileRef.current?.click();
+        break;
+      case "history":
+        setHistoryOpen(true);
         break;
       case "toggle-private":
         togglePrivate();
@@ -949,6 +963,18 @@ export function NoteContent({
             )}
           </button>
           <IconPicker id={id} note={note} masked={masked} />
+          {/* 历史版本的常驻入口（右键菜单里那一条也在）。不分私密：
+              私密的版本住封套，锁着读不到，面板自己会说 */}
+          <button
+            type="button"
+            aria-label="历史版本"
+            title="历史版本（回到之前某一版）"
+            onClick={() => setHistoryOpen(true)}
+            className="rounded p-1 transition-colors hover:bg-black/10"
+            style={{ color: theme.accent }}
+          >
+            <History size={14} aria-hidden />
+          </button>
           <button
             type="button"
             aria-label={note.private ? "取消私密" : "标记私密"}
@@ -993,6 +1019,16 @@ export function NoteContent({
           paper={theme.paper}
           onPick={pickMenu}
           onClose={() => setMenu(null)}
+        />
+      )}
+
+      {historyOpen && (
+        <HistoryPanel
+          noteId={id}
+          isPrivate={note.private}
+          ink={theme.ink}
+          accent={theme.accent}
+          onClose={() => setHistoryOpen(false)}
         />
       )}
 

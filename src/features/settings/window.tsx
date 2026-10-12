@@ -2,7 +2,7 @@
 // 改主题走 changeScheme（落库 + 广播，其它窗即时跟随）；
 // 开机启动读写注册表（autostart_*），开机恢复与备份直接读写 settings / data_backup 命令。
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Database,
   Layers,
@@ -25,7 +25,10 @@ import {
   getSetting,
   openGuideWindow,
   settingsSet,
+  snapshotList,
+  snapshotRestore,
 } from "@/platform/commands";
+import type { Snapshot } from "@/platform/contracts";
 import { AUTOSTART_CHANGED } from "@/platform/contracts";
 import { logger } from "@/platform/logger";
 import { HotkeySection } from "@/features/settings/hotkey-section";
@@ -50,6 +53,39 @@ const GROUP_VIEW_OPTIONS: ReadonlyArray<{
   { value: "tabs", label: "侧边色块签", hint: "正文占整宽，右缘一列方色签，悬停出名字" },
   { value: "accordion", label: "手风琴", hint: "一列到底，点标题行就地展开" },
 ];
+
+/** 私密层自动上锁：设置键与档位。默认档必须与 Rust `autolock.rs` 的 `DEFAULT_MINUTES` 同一个数 */
+const AUTO_LOCK_KEY = "private.auto_lock_min";
+const AUTO_LOCK_DEFAULT_MIN = 5;
+const AUTO_LOCK_OPTIONS: ReadonlyArray<{ value: number; label: string }> = [
+  { value: 0, label: "不锁" },
+  { value: 1, label: "1 分钟" },
+  { value: AUTO_LOCK_DEFAULT_MIN, label: `${AUTO_LOCK_DEFAULT_MIN} 分钟` },
+  { value: 15, label: "15 分钟" },
+  { value: 30, label: "30 分钟" },
+];
+
+/** 缺键与脏值回到默认档——与 `minutes_from` 同一条口径（脏值不许把锁悄悄关掉） */
+function autoLockMinutes(stored: string | null): number {
+  const parsed = Number.parseInt(stored ?? "", 10);
+  return parsed >= 0 && parsed <= 1440 ? parsed : AUTO_LOCK_DEFAULT_MIN;
+}
+
+/** 「恢复」的两段确认与回收站那两条同一个节奏：第一击变确认键，3 秒不点自动退回 */
+const RESTORE_RESET_MS = 3000;
+
+/** `20261012-094703[-2]` → `2026-10-12 09:47:03`（同秒避让的尾巴不显示，那是文件名的事） */
+function formatSnapshotLabel(label: string): string {
+  const stamp = label.slice(0, 15);
+  if (!/^\d{8}-\d{6}$/.test(stamp)) return label;
+  return `${stamp.slice(0, 4)}-${stamp.slice(4, 6)}-${stamp.slice(6, 8)} ${stamp.slice(9, 11)}:${stamp.slice(11, 13)}:${stamp.slice(13, 15)}`;
+}
+
+function formatBytes(bytes: number): string {
+  return bytes >= 1024 * 1024
+    ? `${(bytes / 1024 / 1024).toFixed(1)} MB`
+    : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
 
 function Section({
   icon,
@@ -80,12 +116,46 @@ export function SettingsWindow() {
   const [autostartError, setAutostartError] = useState<string | null>(null);
   const [backupMessage, setBackupMessage] = useState<string | null>(null);
   const [backingUp, setBackingUp] = useState(false);
+  /** null = 还没读到（那一瞬所有档都不画选中，不猜一个给人看） */
+  const [autoLockMin, setAutoLockMin] = useState<number | null>(null);
+  const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
+  const [snapshotError, setSnapshotError] = useState<string | null>(null);
+  /** 恢复成功要重读的那一批：这一窗是"关=藏起来"的，不重载就停在恢复前的读数上 */
+  const [reloadSeq, setReloadSeq] = useState(0);
+  const [armedRestore, setArmedRestore] = useState<string | null>(null);
+  const [restoring, setRestoring] = useState(false);
+  const [restoreMessage, setRestoreMessage] = useState<string | null>(null);
+  const restoreTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    void getSetting(AUTO_LOCK_KEY)
+      .then((value) => setAutoLockMin(autoLockMinutes(value)))
+      .catch(() => setAutoLockMin(AUTO_LOCK_DEFAULT_MIN));
+  }, [reloadSeq]);
 
   useEffect(() => {
     void getSetting("restore_on_boot")
       .then((value) => setRestoreOnBoot(value !== "0")) // 默认开，显式 "0" 才算关
       .catch(() => setRestoreOnBoot(true));
-  }, []);
+  }, [reloadSeq]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void snapshotList()
+      .then((rows) => {
+        if (cancelled) return;
+        setSnapshots(rows);
+        setSnapshotError(null);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setSnapshots([]);
+        setSnapshotError(String(error));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadSeq]);
 
   useEffect(() => {
     // 开机启动的事实来源是注册表，不是库：开窗读一次，托盘那边改了会广播，这里跟着重读。
@@ -137,14 +207,63 @@ export function SettingsWindow() {
     });
   }, []);
 
+  const handleAutoLock = useCallback(
+    (minutes: number) => {
+      const prev = autoLockMin;
+      setAutoLockMin(minutes);
+      // 落库失败就退回原档：这一档的真相在库里（Rust 那条循环直接读它），
+      // 界面上留一个"看着改了、其实没改"的假选中比退回原样更糟
+      void settingsSet(AUTO_LOCK_KEY, String(minutes)).catch((error: unknown) => {
+        logger.caught("settings", "自动上锁档位落库失败，退回原档", error);
+        setAutoLockMin(prev ?? AUTO_LOCK_DEFAULT_MIN);
+      });
+    },
+    [autoLockMin],
+  );
+
   const handleBackup = useCallback(() => {
     if (backingUp) return;
     setBackingUp(true);
     void dataBackup()
-      .then((path) => setBackupMessage(`已备份到 ${path}`))
+      .then((path) => {
+        setBackupMessage(`已备份到 ${path}`);
+        setReloadSeq((seq) => seq + 1); // 刚打的那一份要立刻出现在下面那份清单里
+      })
       .catch((error: unknown) => setBackupMessage(`备份失败：${String(error)}`))
       .finally(() => setBackingUp(false));
   }, [backingUp]);
+
+  /** 两段确认：第一击只把这一行变成"确认恢复"，3 秒不点自动退回（与回收站同一条节奏） */
+  const handleSnapshotRestore = useCallback(
+    (label: string) => {
+      if (armedRestore !== label) {
+        setArmedRestore(label);
+        if (restoreTimer.current !== null) clearTimeout(restoreTimer.current);
+        restoreTimer.current = setTimeout(() => setArmedRestore(null), RESTORE_RESET_MS);
+        return;
+      }
+      if (restoreTimer.current !== null) clearTimeout(restoreTimer.current);
+      setArmedRestore(null);
+      setRestoring(true);
+      void snapshotRestore(label)
+        .then((report) => {
+          setRestoreMessage(
+            [
+              `已恢复到 ${formatSnapshotLabel(report.restored)}。恢复前的状态存为 ${formatSnapshotLabel(report.safetyLabel)}。`,
+              report.envelopeRestored
+                ? "私密封套一起换回了，私密便签要重输一次口令。"
+                : "这份快照没有配套的私密封套，私密真身仍是恢复前那份。",
+              report.warning ?? "",
+            ].join(" "),
+          );
+          // 整库都换了：这一窗自己那些从库里读的档位必须重读，不然显示的是上一个库的
+          setReloadSeq((seq) => seq + 1);
+        })
+        .catch((error: unknown) => setRestoreMessage(`恢复失败：${String(error)}`))
+        .finally(() => setRestoring(false));
+    },
+    [armedRestore],
+  );
 
   return (
     <WindowChrome
@@ -233,6 +352,42 @@ export function SettingsWindow() {
             这是**默认值**：手拉某一扇窗的边就把那一张退回固定尺寸，
             每张便签页脚那个按钮还能单独翻（跟随全局 / 强制自动 / 强制固定三档）。
           </p>
+          <p className="mt-2 text-xs text-[var(--panel-ink)]">
+            私密便签：便签窗内多久没操作就自动上锁
+          </p>
+          <div
+            role="radiogroup"
+            aria-label="私密层自动上锁等待时长"
+            className="mt-1.5 flex flex-wrap gap-1.5"
+          >
+            {AUTO_LOCK_OPTIONS.map((option) => {
+              const active = autoLockMin === option.value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  disabled={autoLockMin === null}
+                  onClick={() => handleAutoLock(option.value)}
+                  className="rounded-md border px-3 py-1.5 text-xs transition-colors disabled:opacity-50"
+                  style={{
+                    borderColor: active ? "var(--panel-ink)" : "var(--panel-border)",
+                    backgroundColor: active ? "var(--panel-hover)" : "transparent",
+                    color: "var(--panel-ink)",
+                    fontWeight: active ? 600 : 400,
+                  }}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
+          <p className="mt-1.5 text-[11px] text-[var(--panel-muted)]">
+            只认便签窗里的点击、按键与滚轮——在设置窗或搜索窗里打字不算续期。到点那一锁
+            与托盘那条「锁定私密层」是同一条路：密钥只从内存清掉，盘上的封套原样，
+            重输口令就回来。改档即时生效，不用重启。
+          </p>
           <button
             type="button"
             onClick={() => {
@@ -271,7 +426,64 @@ export function SettingsWindow() {
             </p>
           )}
           <p className="mt-1.5 text-[11px] text-[var(--panel-muted)]">
-            备份是完整快照，存放在数据目录的 backups\ 下，可用任意 SQLite 工具打开。
+            一份快照 = 整个库（<code>VACUUM INTO</code> 的干净副本，含 WAL）+
+            同名的私密封套 副本，存放在数据目录的 backups\ 下，可用任意 SQLite
+            工具打开。只留最新 10 份。
+          </p>
+          {snapshotError !== null && (
+            <p role="alert" className="mt-1.5 break-all text-[11px] text-red-700">
+              快照清单读不出来：{snapshotError}
+            </p>
+          )}
+          {snapshots.length > 0 && (
+            <ul className="mt-2 flex flex-col gap-1">
+              {snapshots.map((snap) => {
+                const armed = armedRestore === snap.label;
+                return (
+                  <li
+                    key={snap.label}
+                    className="flex items-center gap-2 rounded-md border border-[var(--panel-border)] px-2 py-1"
+                  >
+                    <span className="min-w-0 flex-1 truncate text-[11px] text-[var(--panel-ink)]">
+                      {formatSnapshotLabel(snap.label)}
+                      <span className="ml-1.5 text-[var(--panel-muted)]">
+                        {formatBytes(snap.bytes)}
+                        {!snap.hasEnvelope && " · 无封套副本"}
+                      </span>
+                    </span>
+                    <button
+                      type="button"
+                      aria-label={
+                        armed
+                          ? `确认恢复到 ${snap.label}（当前数据先自动存一份）`
+                          : `恢复到 ${snap.label}`
+                      }
+                      onClick={() => handleSnapshotRestore(snap.label)}
+                      disabled={restoring}
+                      className="shrink-0 rounded px-2 py-1 text-[11px] transition-colors hover:bg-[var(--panel-hover)] disabled:opacity-50"
+                      style={{ color: armed ? "#B91C1C" : "var(--panel-muted)" }}
+                    >
+                      {armed ? "确认恢复" : "恢复"}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          {snapshots.length === 0 && snapshotError === null && (
+            <p className="mt-2 text-[11px] text-[var(--panel-muted)]">
+              还没有快照。点上面那颗钮就有了。
+            </p>
+          )}
+          {restoreMessage !== null && (
+            <p role="status" className="mt-1.5 text-[11px] text-[var(--panel-ink)]">
+              {restoreMessage}
+            </p>
+          )}
+          <p className="mt-1.5 text-[11px] text-[var(--panel-muted)]">
+            恢复是整库换回那一刻：现在的数据不会丢，它会先被自动存成一份新快照。
+            换完私密层会**当场锁上**（内存里那把钥匙对应的是换掉之前的封套），
+            重输口令即可。所有开着的便签窗会自己重读。
           </p>
         </Section>
 

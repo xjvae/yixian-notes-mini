@@ -66,6 +66,10 @@ export interface PreviewArgs extends Record<string, unknown> {
   query?: string;
   key?: string;
   value?: string;
+  /** snapshot_restore 的目标快照名 */
+  label?: string;
+  /** sticky_revert 的目标版本号 */
+  seq?: number;
   password?: string;
   data?: string;
   edge?: string;
@@ -141,6 +145,67 @@ interface MediaRecord {
   width: number;
   height: number;
   createdAt: number;
+}
+
+/**
+ * 一版历史存的内容字段——与 Rust `db/query/revision.rs::Content` 同一份口径：
+ * **只有内容，没有摆位**。回滚一次历史不该把便签从屏幕右下角搬走。
+ */
+type RevisionContent = Pick<
+  StickyNote,
+  | "title"
+  | "body"
+  | "contentType"
+  | "items"
+  | "timeline"
+  | "tags"
+  | "theme"
+  | "icon"
+  | "dueAt"
+  | "doneAt"
+  | "repeat"
+>;
+
+interface RevisionRow {
+  seq: number;
+  createdAt: number;
+  content: RevisionContent;
+}
+
+/** 三个阈值与 Rust 同值：冷却 60 秒、每张 50 条、留 7 天 */
+const REVISION_COALESCE_MS = 60_000;
+const REVISION_KEEP = 50;
+const REVISION_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
+const REVISION_PREVIEW_CHARS = 60;
+
+function contentOf(row: StickyNote): RevisionContent {
+  return {
+    title: row.title,
+    body: row.body,
+    contentType: row.contentType,
+    items: row.items,
+    timeline: row.timeline,
+    tags: row.tags,
+    theme: row.theme,
+    icon: row.icon,
+    dueAt: row.dueAt,
+    doneAt: row.doneAt,
+    repeat: row.repeat,
+  };
+}
+
+/** 列表里那一行的摘要。四类便签的正文不在同一个字段，跟着类型分岔（同 Rust） */
+function previewOf(content: RevisionContent): string {
+  const source =
+    content.contentType === "todo"
+      ? (content.items[0]?.text ?? "")
+      : content.contentType === "timeline"
+        ? (content.timeline[0]?.text ?? "")
+        : content.body;
+  const flat = source.replace(/\n/g, " ").trim();
+  return flat.length <= REVISION_PREVIEW_CHARS
+    ? flat
+    : `${flat.slice(0, REVISION_PREVIEW_CHARS)}…`;
 }
 
 /**
@@ -383,16 +448,11 @@ export class FakeDb {
   private stickies = new Map<string, StickyNote>();
   private groups = new Map<string, StickyGroup>();
   private settings = new Map<string, string>();
-  /** 私密集合：明文 map（真身在 Rust 侧是封套；预览台只做行为，不做密码学） */
-  private sealed: Record<string, SealedText> = {
-    "s-private": {
-      title: "私密便签",
-      body: "主库里这张只留占位：标题/正文/标签都在封套里。",
-      items: [],
-      timeline: [],
-      tags: ["密"],
-    },
-  };
+  /**
+   * 私密集合：明文 map（真身在 Rust 侧是封套；预览台只做行为，不做密码学）。
+   * 播种只有一处——`reset()`（构造即调），这里不留第二份会漂移的副本。
+   */
+  private sealed: Record<string, SealedText> = {};
   private password: string | null = null;
   private unlocked = false;
   private dockEdges: Record<string, string> = {};
@@ -414,6 +474,23 @@ export class FakeDb {
   /** media 表（0005_media.sql）。id 形状照 support/id.rs::media()：m + 十六进制 */
   private media = new Map<string, MediaRecord>();
   private mediaSeq = 0;
+  /**
+   * 假快照清单。真正的换表在 Rust（`commands/snapshot.rs::swap_tables`），假库不换内容——
+   * 这一份只够把设置窗那套「清单 + 两段确认 + 回显文案」走一遍。
+   * 故意留一份 `hasEnvelope: false`，让"老快照没配套封套"那一支在预览台看得见。
+   */
+  private snapshots: {
+    label: string;
+    bytes: number;
+    createdAt: number;
+    hasEnvelope: boolean;
+  }[] = [];
+  /**
+   * 假历史。判据照 `db/query/revision.rs` 抄：存的是被换掉**之前**的内容、
+   * 内容没变不占格、同一张 60 秒内最多一档、每张留最新 50 条、私密不记。
+   * 真表在 SQLite（迁移 v9），这里只是内存——预览台要能点开看到列表长什么样。
+   */
+  private revisions = new Map<string, RevisionRow[]>();
   readonly actions: WindowAction[] = [];
   readonly log: string[] = [];
 
@@ -430,6 +507,7 @@ export class FakeDb {
       "s-private": {
         title: "私密便签",
         body: "主库里这张只留占位：标题/正文/标签都在封套里。",
+        contentType: "text",
         items: [],
         timeline: [],
         tags: ["密"],
@@ -439,12 +517,56 @@ export class FakeDb {
     this.unlocked = false;
     this.media = new Map();
     this.mediaSeq = 0;
+    this.revisions = new Map();
+    this.snapshots = [
+      {
+        label: this.snapshotLabel(3600),
+        bytes: 139264,
+        createdAt: Date.now() - 3600_000,
+        hasEnvelope: true,
+      },
+      {
+        label: this.snapshotLabel(86400),
+        bytes: 122880,
+        createdAt: Date.now() - 86400_000,
+        hasEnvelope: false,
+      },
+    ];
     // 种子图：正文里那句 media:// 引用得有真字节对着它。用 canvas 画而不是塞一段
     // base64 字面量——那种常量没人改得动，也演不出"缩与重编码之后长什么样"
     this.seedMedia("s-text", "便签里的种子图", "#2f7d32");
     this.actions.length = 0;
     this.broadcasts.length = 0;
     this.log.length = 0;
+  }
+
+  /** 与 Rust `clock::timestamp_label` 同形状的本地时间戳（快照名就是它，恢复只认这个形状） */
+  private snapshotLabel(offsetSec: number): string {
+    const d = new Date(Date.now() - offsetSec * 1000);
+    const p = (n: number): string => String(n).padStart(2, "0");
+    return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+  }
+
+  /**
+   * 与 Rust `revision::record` 同判据：没变不占格、同一张 60 秒最多一档、
+   * 每张留最新 50 条与 7 天、私密不记（那张表明文落盘）。
+   */
+  private recordRevision(id: string, before: StickyNote, force: boolean): void {
+    if (before.private) return;
+    const list = this.revisions.get(id) ?? [];
+    const newest = list[list.length - 1];
+    const content = contentOf(before);
+    const now = nowMs();
+    if (newest !== undefined) {
+      if (JSON.stringify(newest.content) === JSON.stringify(content)) return;
+      if (!force && now - newest.createdAt < REVISION_COALESCE_MS) return;
+    }
+    list.push({ seq: (newest?.seq ?? 0) + 1, createdAt: now, content });
+    const cutoff = now - REVISION_KEEP_MS;
+    this.revisions.set(
+      id,
+      list.filter((row) => row.createdAt >= cutoff).slice(-REVISION_KEEP),
+    );
   }
 
   private nextMediaId(): string {
@@ -686,7 +808,43 @@ export class FakeDb {
         return null;
       }
       case "data_backup":
+        this.snapshots.unshift({
+          label: this.snapshotLabel(0),
+          bytes: 139264,
+          createdAt: Date.now(),
+          hasEnvelope: this.password !== null,
+        });
         return `预览台没有真备份文件（假库）· ${new Date().toISOString()}`;
+      case "snapshot_list":
+        return this.snapshots;
+      case "snapshot_restore": {
+        const label = args.label ?? "";
+        const target = this.snapshots.find((row) => row.label === label);
+        if (target === undefined) {
+          throw new PreviewError("SNAPSHOT_MISSING", `没有这份快照：${label}`);
+        }
+        // 次序与 Rust 同：先给"现在"存一份安全网，再换。换表本身不演——那要真
+        // ATTACH 一个 SQLite 文件，归 snapshot.rs 的 Rust 测试管。上锁这一条是真的：
+        // 封套换了，内存里那把钥匙就该作废
+        const safety = {
+          label: this.snapshotLabel(0),
+          bytes: 139264,
+          createdAt: Date.now(),
+          hasEnvelope: true,
+        };
+        this.snapshots.unshift(safety);
+        this.unlocked = false;
+        this.emitPrivate(writer);
+        this.note(`预览台不换库，只演清单与上锁：恢复 ${label}`);
+        return {
+          restored: label,
+          safetyLabel: safety.label,
+          envelopeRestored: target.hasEnvelope,
+          warning: target.hasEnvelope
+            ? null
+            : "这份快照没有配套的私密封套（那条规则之前产的老快照）：私密便签的真身仍是当前这一份，可能与恢复回来的行对不上。",
+        };
+      }
 
       // —— 开机启动（autostart.rs：真机读写注册表的 Run 键，这里只有内存）——
       case "autostart_get":
@@ -719,8 +877,35 @@ export class FakeDb {
           updatedAt: now,
         };
         this.stickies.set(input.id, row);
+        // 换掉之前先留一版历史（判据见 recordRevision）
+        if (existing !== undefined) this.recordRevision(input.id, existing, false);
         this.emit("sticky", writer);
         return row;
+      }
+      case "sticky_revisions": {
+        const list = this.revisions.get(args.id as string) ?? [];
+        return [...list].reverse().map((row) => ({
+          seq: row.seq,
+          createdAt: row.createdAt,
+          title: row.content.title,
+          contentType: row.content.contentType,
+          preview: previewOf(row.content),
+        }));
+      }
+      case "sticky_revert": {
+        const id = args.id as string;
+        const seq = args.seq as number;
+        const row = this.stickies.get(id);
+        const target = (this.revisions.get(id) ?? []).find((rev) => rev.seq === seq);
+        if (row === undefined || target === undefined) {
+          throw new PreviewError("REVISION_MISSING", `没有第 ${seq} 版`);
+        }
+        // 与 Rust 同：回滚前把当前内容**强记**一版（绕过冷却），所以回滚错了还能回来
+        this.recordRevision(id, row, true);
+        const reverted: StickyNote = { ...row, ...target.content, updatedAt: nowMs() };
+        this.stickies.set(id, reverted);
+        this.emit("sticky", writer);
+        return reverted;
       }
       case "sticky_delete": {
         const row = this.stickies.get(args.id as string);
@@ -732,6 +917,8 @@ export class FakeDb {
           for (const [id, record] of [...this.media.entries()]) {
             if (record.noteId === row.id) this.media.delete(id);
           }
+          // 历史版本一并带走：这张都不在了，留着就是谁也读不到的孤儿行
+          this.revisions.delete(row.id);
           this.stickies.delete(row.id);
         } else if (!row.deleted) {
           // 软删：盖一次删除时钟，同时不再作为浮窗常驻（SQL：floating = 0）
@@ -762,6 +949,19 @@ export class FakeDb {
         // Rust 侧恢复后 open_sticky：组员会被路由到它所在叠窗
         this.openStickyRouted(row.id);
         return true;
+      }
+      case "trash_clear_all": {
+        // trash.rs::clear：所有软删行连图一起走，不看删除时钟
+        const doomed = [...this.stickies.values()].filter((row) => row.deleted);
+        for (const row of doomed) {
+          for (const [id, record] of [...this.media.entries()]) {
+            if (record.noteId === row.id) this.media.delete(id);
+          }
+          this.stickies.delete(row.id);
+        }
+        this.pruneEmptyGroups();
+        this.emit("sticky", writer);
+        return doomed.length;
       }
       case "sticky_set_group": {
         const id = args.id as string;
@@ -917,6 +1117,11 @@ export class FakeDb {
       case "private_lock":
         // 与 Rust 同：private_lock 不广播（托盘「立即锁定」那条路自带收尾）
         this.unlocked = false;
+        return null;
+      case "private_note_activity":
+        // 自动上锁的时钟与那条循环整个住在 Rust（`autolock.rs`），预览台没有可模拟的
+        // 对钟——这里只把上报咽下去，别让每 5 秒一次的噪音刷进命令流水。
+        // 所以「无操作到点自动锁」这一条**在预览台验不出来**，只有真机能看。
         return null;
       case "private_load": {
         if (this.password === null)

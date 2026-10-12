@@ -9,6 +9,9 @@
 
 import type {
   PrivateStatus,
+  RevisionMeta,
+  SealedContent,
+  SealedRevision,
   SealedText,
   StickyInput,
   StickyNote,
@@ -18,6 +21,73 @@ import { logger } from "@/platform/logger";
 import type { NotesBackend } from "@/store/backend";
 
 const SCOPE = "private-backend";
+
+/**
+ * 私密历史的三个阈值与 Rust `db/query/revision.rs` 同值（那边管明文表，这里管封套）：
+ * 同一张 60 秒最多一档、每张留最新 50 条、留 7 天。改一边要同步另一边。
+ */
+const REVISION_COALESCE_MS = 60_000;
+const REVISION_KEEP = 50;
+const REVISION_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
+const REVISION_PREVIEW_CHARS = 60;
+
+function contentOf(entry: SealedText): SealedContent {
+  return {
+    title: entry.title,
+    body: entry.body,
+    contentType: entry.contentType,
+    items: entry.items,
+    timeline: entry.timeline,
+    tags: entry.tags,
+  };
+}
+
+/**
+ * 把"被换掉之前那一份"追加进 revisions。判据与 Rust 的 `record` 同一条：
+ * 没变不占格、冷却内不占格、两头夹保留量。`force` 只给回滚用。
+ */
+function pushRevision(
+  previous: SealedContent | undefined,
+  revisions: SealedRevision[] | undefined,
+  now: number,
+  force: boolean,
+): SealedRevision[] {
+  const list = revisions ?? [];
+  // 新建的那张没有"之前"，没什么可留
+  if (previous === undefined) return list;
+  const newest = list[list.length - 1];
+  if (newest !== undefined) {
+    if (JSON.stringify(newest.content) === JSON.stringify(previous)) return list;
+    if (!force && now - newest.createdAt < REVISION_COALESCE_MS) return list;
+  }
+  const next = [
+    ...list,
+    { seq: (newest?.seq ?? 0) + 1, createdAt: now, content: previous },
+  ];
+  const cutoff = now - REVISION_KEEP_MS;
+  return next.filter((row) => row.createdAt >= cutoff).slice(-REVISION_KEEP);
+}
+
+/** 列表里那一行的摘要。四类便签的正文不在同一个字段，跟着类型分岔（同 Rust） */
+function previewOf(content: SealedContent): string {
+  const source =
+    content.contentType === "todo"
+      ? (content.items[0]?.text ?? "")
+      : content.contentType === "timeline"
+        ? (content.timeline[0]?.text ?? "")
+        : content.body;
+  const flat = source.replace(/\n/g, " ").trim();
+  return flat.length <= REVISION_PREVIEW_CHARS
+    ? flat
+    : `${flat.slice(0, REVISION_PREVIEW_CHARS)}…`;
+}
+
+async function readMap(): Promise<Record<string, SealedText>> {
+  const parsed: unknown = JSON.parse(await privateLoad());
+  return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+    ? (parsed as Record<string, SealedText>)
+    : {};
+}
 
 const BLANK = {
   title: "",
@@ -31,10 +101,11 @@ function stripSensitive(input: StickyInput): StickyInput {
   return input.private ? { ...input, ...BLANK } : input;
 }
 
-function extractSealed(input: StickyInput): SealedText {
+function extractSealed(input: StickyInput): SealedContent {
   return {
     title: input.title,
     body: input.body,
+    contentType: input.contentType,
     items: input.items,
     timeline: input.timeline,
     tags: input.tags,
@@ -116,9 +187,23 @@ export function withPrivateLayer(inner: NotesBackend): NotesBackend {
         return inner.upsert(stripSensitive(input));
       }
       // 先封真身（fresh nonce 整份重加密），再把占位落主库。封失败就不动主库。
-      sealed[input.id] = extractSealed(input);
+      // 覆盖之前把**旧真身**记成一版：私密便签不进明文历史表（那张表谁都看得见），
+      // 它的版本只能跟着封套走，于是"看历史"和"看便签"共用同一道口令门
+      const previous = sealed[input.id];
+      sealed[input.id] = {
+        ...extractSealed(input),
+        revisions: pushRevision(
+          previous === undefined ? undefined : contentOf(previous),
+          previous?.revisions,
+          Date.now(),
+          false,
+        ),
+      };
       await saveSealed();
-      return inner.upsert(stripSensitive(input));
+      // 返回值要合并回真身：主库那份是占位，而 notes-store.flushNow 拿返回值**整份**
+      // 换掉内存里的实体（它只要 Rust 盖的 updatedAt）。不合并就是每次落库把这张的
+      // 标题和正文从内存里抹掉，下一次落库再把抹掉的空占位封回套里——真内容没了。
+      return mergeSealed(await inner.upsert(stripSensitive(input)), sealed);
     },
 
     async remove(id, hard) {
@@ -137,4 +222,43 @@ export function withPrivateLayer(inner: NotesBackend): NotesBackend {
       return inner.remove(id, hard);
     },
   };
+}
+
+/**
+ * 私密便签的历史版本（从封套里读，新的在前）。
+ *
+ * 锁着会由 `privateLoad` 抛 `PRIVATE_LOCKED` —— 这正是作者要的"必须输入密码才能查看"
+ * 落的地方：私密的版本与私密的正文共用同一道门，没有第二条能绕过它的读路径。
+ */
+export async function sealedRevisions(id: string): Promise<RevisionMeta[]> {
+  const list = (await readMap())[id]?.revisions ?? [];
+  return [...list].reverse().map((row) => ({
+    seq: row.seq,
+    createdAt: row.createdAt,
+    title: row.content.title,
+    contentType: row.content.contentType,
+    preview: previewOf(row.content),
+  }));
+}
+
+/**
+ * 回到封套里的某一版：把那一版的内容写进条目（`revisions` 原样留着），并把**回滚前**
+ * 这份强记成一版（`force` 绕过冷却——刚打的字立刻回滚，不记就没有回头路）。
+ *
+ * 只重写封套：主库那一行对私密便签永远是空占位，没有内容可换。调用方拿到返回值后用
+ * `updateNote` 把内容落进视图，那一次 flush 会因为"内容没变"而不再多记一版。
+ */
+export async function sealedRevert(id: string, seq: number): Promise<SealedContent> {
+  const map = await readMap();
+  const entry = map[id];
+  const target = entry?.revisions?.find((row) => row.seq === seq);
+  if (entry === undefined || target === undefined) {
+    throw new Error(`私密便签没有第 ${seq} 版`);
+  }
+  map[id] = {
+    ...target.content,
+    revisions: pushRevision(contentOf(entry), entry.revisions, Date.now(), true),
+  };
+  await privateSave(JSON.stringify(map));
+  return target.content;
 }

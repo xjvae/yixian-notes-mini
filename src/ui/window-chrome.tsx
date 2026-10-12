@@ -21,7 +21,12 @@ export interface WindowChromeProps {
    * 便签必须传：描边要跟着这张纸走，深纸浅纸都得有边但不能是"灰圈"。
    */
   ink?: string;
-  /** 条上文字（收起态显示；展开态由内容自己呈现标题） */
+  /**
+   * 条上文字。**收起与展开两支都显示**：展开那句是只读的（改名仍走正文那一行输入框），
+   * 收起那句可以切成编辑框（给了 `onRename` 才有那颗钮）。
+   * 18 字截断由调用方做，空标题在这换成"未命名便签"。不给就没有这句（面板窗、叠窗
+   * 的组名住 `leading` 槽）。
+   */
   title?: string;
   /**
    * 改标题时的**初值**：必须是那条没被显示层截过的原文。
@@ -125,6 +130,20 @@ export function WindowChrome({
     setRenaming(true);
   };
 
+  /**
+   * 条上那句标题。**收起与展开共用同一份**：展开态过去是空的拖动区，一张纸在桌面上
+   * 只有正文能认出是谁；正文那行输入框照旧在，所以这一句只读、不抢编辑。
+   */
+  const titleSpan = (
+    <span
+      className="min-w-0 flex-1 truncate text-xs font-semibold"
+      style={{ color: accent }}
+      data-tauri-drag-region
+    >
+      {title?.trim() === "" ? "未命名便签" : title}
+    </span>
+  );
+
   return (
     <div
       className={`relative flex h-screen w-screen select-none flex-col overflow-hidden rounded-lg border border-solid${flash ? " sticky-ping" : ""}`}
@@ -171,13 +190,7 @@ export function WindowChrome({
                 style={{ color: accent }}
               />
             ) : (
-              <span
-                className="min-w-0 flex-1 truncate text-xs font-semibold"
-                style={{ color: accent }}
-                data-tauri-drag-region
-              >
-                {title?.trim() === "" ? "未命名便签" : title}
-              </span>
+              titleSpan
             )}
             {badges}
             {/* 改名走**按钮**而不是双击标题：Tauri 的 drag region 在 Windows 上
@@ -192,7 +205,7 @@ export function WindowChrome({
               iconButton("展开", onExpand, accent, <ChevronUp size={14} aria-hidden />)}
           </>
         ) : (
-          <div className="flex-1" data-tauri-drag-region />
+          titleSpan
         )}
         {trailing}
         {iconButton(

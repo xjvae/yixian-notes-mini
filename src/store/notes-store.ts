@@ -220,8 +220,24 @@ export async function flushNow(): Promise<void> {
         return;
       }
       const saved = await sink.upsert(toInput(note));
-      // 用权威时间戳回填内存（不改其它字段，不触发新一轮写）
-      notes.set(id, saved);
+      // 回填分两种，分界线是"内存里这一份还是不是发出时那一份"
+      // （updateNote 每次换新对象，所以引用相等 = 这一路没再改过）：
+      //  · 没再改过 → 整行换成后端那份权威的。后端会被绕过 store 直改字段
+      //    （`sticky_set_group` 就是一条 SQLite 直 UPDATE），整行换才拉得回来。
+      //  · 又改过 → 只补后端才有的那三个时钟，留着新敲的内容。整行换会把往返期间
+      //    敲的字吃掉，而私密便签这一路最宽（四次 IPC + 整个封套加解密 + 广播重读）。
+      const live = notes.get(id);
+      notes.set(
+        id,
+        live === undefined || live === note
+          ? saved
+          : {
+              ...live,
+              createdAt: saved.createdAt,
+              updatedAt: saved.updatedAt,
+              deletedAt: saved.deletedAt,
+            },
+      );
     }),
   );
   let hadFailure = false;

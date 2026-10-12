@@ -4,7 +4,9 @@ use rusqlite::{params, OptionalExtension};
 
 use crate::db::models::{StickyInput, StickyRow};
 use crate::db::pool::Db;
+use crate::db::query::revision;
 use crate::support::error::{AppError, AppResult};
+use crate::support::log;
 
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
@@ -103,6 +105,11 @@ pub fn upsert(db: &Db, input: StickyInput) -> AppResult<StickyRow> {
     let deleted_at_on_insert = if input.deleted { Some(now) } else { None };
     {
         let conn = db.lock();
+        // 换掉之前先留一版历史（判据与冷却见 `revision.rs`）。记不上不许挡住这次写：
+        // 少一版历史是可以解释的，"改了存不进去"是事故
+        if let Err(e) = revision::record(&conn, &input.id, now, false) {
+            log::warn("revision", &format!("记历史版本失败（这次写照走）：{e}"));
+        }
         conn.execute(
             "INSERT INTO stickies (
                 id, title, body, content_type, items_json, timeline_json, tags_json, theme,
@@ -173,6 +180,8 @@ pub fn delete(db: &Db, id: &str, hard: bool) -> AppResult<bool> {
     let conn = db.lock();
     let changed = if hard {
         conn.execute("DELETE FROM media WHERE note_id = ?1", [id])?;
+        // 历史版本也跟着走：这张都不在了，留着就是谁也读不到的孤儿行
+        revision::delete_for_note(&conn, id)?;
         conn.execute("DELETE FROM stickies WHERE id = ?1", [id])?
     } else {
         conn.execute(

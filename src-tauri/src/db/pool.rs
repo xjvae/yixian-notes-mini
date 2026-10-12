@@ -41,6 +41,13 @@ impl Db {
         Self::from_connection_with_dir(conn, Path::new(""))
     }
 
+    /// 测试入口（带数据目录）：`from_connection` 的 dir 是空串，任何往 `dir()` 下
+    /// 写文件的用例都会写成**相对路径**，落在仓库里。备份/快照那几条要真目录，走这条。
+    #[cfg(test)]
+    pub fn from_connection_in(conn: Connection, dir: &Path) -> Self {
+        Self::from_connection_with_dir(conn, dir)
+    }
+
     fn from_connection_with_dir(conn: Connection, dir: &Path) -> Self {
         // journal_mode 返回结果行，走 query_row 而不是 pragma_update
         let _ = conn.query_row("PRAGMA journal_mode = WAL", [], |row| {

@@ -36,6 +36,7 @@ import {
 } from "@/platform/bridge";
 import { logger } from "@/platform/logger";
 import { getStickyId } from "@/window/identity";
+import { useNoteActivity } from "@/window/use-note-activity";
 import { useWindowGeometry } from "@/window/geometry";
 import { useStickyPing } from "@/window/use-sticky-ping";
 
@@ -49,6 +50,8 @@ export function StickyWindow() {
   const { resolved } = useScheme();
   /** 收起栏上的提醒角标按时钟分档；时钟走 hook，渲染里不许直接取 Date.now() */
   const now = useNow();
+  /** 私密层自动上锁的"这扇窗里刚有人动过"上报（单窗与叠窗各挂一份，见 hook 处注释） */
+  useNoteActivity();
 
   /** 收起形态只认本地开关：展开尺寸记在行里，收起栏的高度不该写回去 */
   const [minimized, setMinimized] = useState(() => note?.collapsed ?? false);

@@ -122,7 +122,32 @@ export function specOf(kind: FrameKind): (typeof SIZE)[FrameKind] {
   return SIZE[kind];
 }
 
-/** 与 float.rs 的 cascade_position 同口径：按已开浮窗数错开，一眼看出是新开的 */
-export function cascadePosition(openFloats: number): { x: number; y: number } {
-  return { x: 80 + openFloats * 26, y: 90 + openFloats * 26 };
+/**
+ * 与 monitor.rs::WorkArea::center_block 同口径：一块尺寸在工作区里居中的左上角，
+ * 出界整块夹回来。Rust 那边是整数除法（向零截断），这里也用 trunc 对得上。
+ */
+export function centerBlock(
+  work: Rect,
+  size: { width: number; height: number },
+): { x: number; y: number } {
+  const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
+  const maxX = Math.max(work.x, work.x + work.width - size.width);
+  const maxY = Math.max(work.y, work.y + work.height - size.height);
+  return {
+    x: clamp(Math.trunc(work.x + (work.width - size.width) / 2), work.x, maxX),
+    y: clamp(Math.trunc(work.y + (work.height - size.height) / 2), work.y, maxY),
+  };
+}
+
+/**
+ * 与 float.rs::spawn_position 同口径：没摆过位的便签/叠窗落在工作区正中，
+ * 再按已开浮窗数每张向右下错开 26 像素（真机是逻辑像素，预览台没有缩放，同一数值）。
+ */
+export function spawnPosition(
+  work: Rect,
+  size: { width: number; height: number },
+  openFloats: number,
+): { x: number; y: number } {
+  const centered = centerBlock(work, size);
+  return { x: centered.x + openFloats * 26, y: centered.y + openFloats * 26 };
 }

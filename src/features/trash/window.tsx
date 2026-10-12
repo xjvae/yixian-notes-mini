@@ -1,6 +1,7 @@
 // 回收站窗 — 软删便签的列表、恢复与彻底删除。
 // 取数不走主 store（那里只有未删数据）：直接 list(includeDeleted) + 听 db:changed 刷新。
-// 「彻底删除」真删，不可恢复——两段确认（第一击变确认键，3 秒不点自动退回）。
+// 「彻底删除」与「一键清空」都真删、不可恢复——共用同一段两段确认（第一击变确认键，
+// 3 秒不点自动退回），所以同一时刻只可能亮起一颗确认键。
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { RotateCcw, Trash2, X } from "lucide-react";
@@ -11,6 +12,7 @@ import {
   closeTrashWindow,
   stickyDelete,
   stickyList,
+  trashClearAll,
   trashRestore,
 } from "@/platform/commands";
 import { listen } from "@/platform/bridge";
@@ -20,6 +22,8 @@ import type { DbChangedEvent, StickyNote } from "@/platform/contracts";
 const PANEL_BG = "var(--panel-bg)";
 const PANEL_ACCENT = "var(--panel-ink)";
 const CONFIRM_RESET_MS = 3000;
+/** 「一键清空」借用行级那套确认，需要一个撞不上便签 id 的哨兵键 */
+const CLEAR_ALL = "__clear_all__";
 
 function formatDateTime(ms: number): string {
   const d = new Date(ms);
@@ -70,16 +74,18 @@ export function TrashWindow() {
   }, []);
 
   const handleHardDelete = useCallback(
-    (id: string) => {
-      if (confirmingId !== id) {
-        setConfirmingId(id);
+    (target: string) => {
+      if (confirmingId !== target) {
+        setConfirmingId(target);
         if (confirmTimer.current !== null) clearTimeout(confirmTimer.current);
         confirmTimer.current = setTimeout(() => setConfirmingId(null), CONFIRM_RESET_MS);
         return;
       }
       if (confirmTimer.current !== null) clearTimeout(confirmTimer.current);
       setConfirmingId(null);
-      void stickyDelete(id, true).catch((error: unknown) => {
+      // 哨兵键那一支清的是整个回收站（所有软删行连图），别的只清这一行
+      const gone = target === CLEAR_ALL ? trashClearAll() : stickyDelete(target, true);
+      gone.catch((error: unknown) => {
         setLoadError(String(error));
       });
     },
@@ -100,11 +106,33 @@ export function TrashWindow() {
       }}
     >
       <div className="flex h-full flex-col gap-2 p-4">
-        <div className="flex shrink-0 items-baseline gap-2">
-          <h1 className="text-sm font-semibold text-[var(--panel-ink)]">回收站</h1>
-          <span className="text-xs text-[var(--panel-muted)]">
-            {rows === null ? "载入中…" : `${deletedCount} 张，30 天后自动清理`}
-          </span>
+        <div className="flex shrink-0 items-center gap-2">
+          <div className="flex min-w-0 items-baseline gap-2">
+            <h1 className="text-sm font-semibold text-[var(--panel-ink)]">回收站</h1>
+            <span className="text-xs text-[var(--panel-muted)]">
+              {rows === null ? "载入中…" : `${deletedCount} 张，30 天后自动清理`}
+            </span>
+          </div>
+          {deletedCount > 0 && (
+            <button
+              type="button"
+              aria-label={
+                confirmingId === CLEAR_ALL
+                  ? `确认清空 ${deletedCount} 张（不可恢复）`
+                  : `一键清空 ${deletedCount} 张`
+              }
+              onClick={() => handleHardDelete(CLEAR_ALL)}
+              className="ml-auto flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs transition-colors hover:bg-red-50"
+              style={{ color: confirmingId === CLEAR_ALL ? "#B91C1C" : "#9CA3AF" }}
+            >
+              {confirmingId === CLEAR_ALL ? (
+                <X size={12} aria-hidden />
+              ) : (
+                <Trash2 size={12} aria-hidden />
+              )}
+              {confirmingId === CLEAR_ALL ? "确认清空" : "一键清空"}
+            </button>
+          )}
         </div>
         {loadError !== null && (
           <div role="alert" className="rounded bg-red-50 px-2 py-1 text-xs text-red-700">

@@ -9,6 +9,7 @@
 //              dock 贴边槽位 / search·trash·settings·unlock·ring 面板窗 /
 //              monitor 工作区取值的唯一一份）
 //   hotkeys  ：全局快捷键（逐条注册、逐条容忍失败、改键落库）
+//   autolock ：私密层"便签窗内无操作自动上锁"的那条时钟线程
 //   autostart：开机启动（状态在 Windows 注册表的 Run 键里，不落库）
 //   splash   ：开场窗（原生分层窗，不碰 WebView2）
 //   tray     ：系统托盘
@@ -21,6 +22,7 @@
 // 退出清理（RunEvent::Exit）：先卸鼠标钩子再走其余清理——钩子不卸，进程收尸后
 // 全系统右键都会被一个死人钩子吞掉，症状是"退出了右键还是坏的"。
 
+mod autolock;
 mod autostart;
 mod commands;
 mod data;
@@ -99,6 +101,9 @@ pub fn run() {
             splash::spawn(&handle);
             // 私密层状态扫描：盘上有合法封套才算"配置过"（损坏按没配置算，现场进日志）
             app.manage(data::private::PrivateVault::scan(&dir));
+            // 自动上锁的时钟住 Rust 这一侧才跨窗唯一（便签窗可能被全部收起、面板窗可能正开着）。
+            // 起点 0 = "这一轮还没人动过便签"，那条循环的第一轮先把它拨成当前时刻
+            app.manage(autolock::NoteIdle::default());
             match db::Db::open(&dir) {
                 Ok(database) => {
                     match db::migrate::run(&database) {
@@ -202,6 +207,8 @@ pub fn run() {
             // 提醒调度：库管起来之后才起（循环每轮都要 `try_state::<Db>()`，
             // 主库没开成就只是空转，不会 panic）。
             reminders::spawn(handle.clone());
+            // 私密层自动上锁的循环：与提醒同一条形状（自己的线程，每轮睡十几秒）
+            autolock::spawn(handle.clone());
             tray::build(&handle)?;
             // 快捷键最后注册：插件的托管状态要先就位；逐条容忍失败。
             // 覆盖表从已管理的库读（读不到就按默认表全量注册）。
@@ -254,11 +261,16 @@ pub fn run() {
             commands::db::settings_get,
             commands::db::settings_set,
             commands::db::data_backup,
+            commands::snapshot::snapshot_list,
+            commands::snapshot::snapshot_restore,
             commands::entity::sticky_list,
             commands::entity::sticky_upsert,
             commands::entity::sticky_delete,
             commands::entity::trash_restore,
+            commands::entity::trash_clear_all,
             commands::entity::sticky_set_group,
+            commands::revision::sticky_revisions,
+            commands::revision::sticky_revert,
             commands::entity::group_list,
             commands::entity::group_rename,
             commands::entity::group_set_collapsed,
@@ -267,6 +279,7 @@ pub fn run() {
             commands::private::private_status,
             commands::private::private_setup,
             commands::private::private_unlock,
+            commands::private::private_note_activity,
             commands::private::private_lock,
             commands::private::private_load,
             commands::private::private_save,

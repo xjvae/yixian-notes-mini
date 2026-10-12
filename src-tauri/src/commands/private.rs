@@ -5,9 +5,10 @@
 use serde::Serialize;
 use tauri::{Emitter, Manager, State, WebviewWindow};
 
+use crate::autolock::NoteIdle;
 use crate::data::private::{self, PrivateVault};
 use crate::support::error::AppResult;
-use crate::support::log;
+use crate::support::{clock, log};
 
 use super::{run_db, run_task};
 
@@ -35,10 +36,14 @@ pub async fn private_status(vault: State<'_, PrivateVault>) -> AppResult<Private
 pub async fn private_setup(
     win: WebviewWindow,
     vault: State<'_, PrivateVault>,
+    idle: State<'_, NoteIdle>,
     password: String,
 ) -> AppResult<()> {
     let vault = vault.inner().clone();
     run_task(move || private::setup(&vault, &password)).await?;
+    // 刚设完口令的人正在口令窗里，不在便签里——时钟要拨到此刻，
+    // 否则自动上锁那条循环会从他配好那一分钟起开始数
+    idle.stamp(clock::now_ms());
     emit_changed(&win);
     Ok(())
 }
@@ -47,11 +52,21 @@ pub async fn private_setup(
 pub async fn private_unlock(
     win: WebviewWindow,
     vault: State<'_, PrivateVault>,
+    idle: State<'_, NoteIdle>,
     password: String,
 ) -> AppResult<()> {
     let vault = vault.inner().clone();
     run_task(move || private::unlock(&vault, &password)).await?;
+    idle.stamp(clock::now_ms());
     emit_changed(&win);
+    Ok(())
+}
+
+/// 便签窗内"动了一下"（指针按下 / 按键 / 滚轮，前端自己节流到 ≤每 5 秒一次）。
+/// 只拨时钟，不碰封套，所以不广播。
+#[tauri::command]
+pub async fn private_note_activity(idle: State<'_, NoteIdle>) -> AppResult<()> {
+    idle.stamp(clock::now_ms());
     Ok(())
 }
 
@@ -84,10 +99,12 @@ pub async fn private_save(
 pub async fn private_rekey(
     win: WebviewWindow,
     vault: State<'_, PrivateVault>,
+    idle: State<'_, NoteIdle>,
     password: String,
 ) -> AppResult<()> {
     let vault = vault.inner().clone();
     run_task(move || private::rekey(&vault, &password)).await?;
+    idle.stamp(clock::now_ms());
     emit_changed(&win);
     Ok(())
 }

@@ -4,9 +4,10 @@
 // 链接给打开+复制、图给复制+删掉，最后都接同一串便签通用项）是最容易改乱的地方。
 // 写成纯函数就能把每条分支钉进用例，而不是靠手点五种位置去回忆规则。
 //
-// 尾巴那五项是**同一串**（作者拍板"随对象变"，但通用项不该跟着目标消失）：
-// 加一张图 / 复制正文 / 标记或取消私密 / 收起为标题栏 / 删除便签。
+// 尾巴那几项是**同一串**（作者拍板"随对象变"，但通用项不该跟着目标消失）：
+// 加一张图 / 复制正文 / 历史版本 / 标记或取消私密 / 收起为标题栏 / 删除便签。
 // 收起只在单窗有——叠窗没有标题栏形态，所以 `canCollapse` 由调用方说，这里不猜。
+// 历史版本不分私密：私密的版本住封套里（锁着读不到），入口照给（作者拍的）。
 // 危险项（删除便签、删掉这张图）一律排在各自那一段的最后，不让人闭着眼点到。
 
 import type { RowRef } from "@/features/sticky/row-target";
@@ -68,6 +69,7 @@ export type MenuActionId =
   | "delete-image"
   | "add-image"
   | "copy-body"
+  | "history"
   | "toggle-private"
   | "toggle-collapse"
   | "delete-note"
@@ -86,6 +88,7 @@ function commonTail(note: NoteState): MenuAction[] {
   const items: MenuAction[] = [
     { id: "add-image", label: "加一张图" },
     { id: "copy-body", label: note.bodyLabel },
+    { id: "history", label: "历史版本" },
     {
       id: "toggle-private",
       label: note.isPrivate ? "取消私密" : "标记私密",

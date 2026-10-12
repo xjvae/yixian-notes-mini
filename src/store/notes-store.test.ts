@@ -6,6 +6,7 @@ import type { DbChangedEvent, StickyInput, StickyNote } from "@/platform/contrac
 import { createDefaultSticky } from "@/data/entities";
 import type { NotesBackend } from "@/store/backend";
 import {
+  flushNow,
   getNote,
   hydrateStore,
   initStore,
@@ -129,6 +130,52 @@ describe("updateNote 实体粒度写", () => {
     const last = backend.upserts.at(-1);
     expect(last?.title).toBe("移出之后又改了标题");
     expect(last?.groupId).toBeNull();
+  });
+
+  /**
+   * 上一那条用例要的是"整行换成后端那份权威的"，这一条要的是"往返期间新敲的不能没"——
+   * 两者不冲突，分界线是**内存里这一份还是不是发出时那一份**（`updateNote` 每次换新对象，
+   * 所以引用相等就是"这一路没再改过"）。丢进去判据就没了。
+   *
+   * 私密便签的往返特别宽（`privateStatus` + `privateLoad` 解密整个封套 + `privateSave`
+   * 重加密写文件 + `sticky_upsert`，还捎带让所有窗重读一遍），所以真机上第一个撞上的
+   * 是它：作者报的"内容输入有问题"。
+   */
+  it("落库往返期间又敲的字，不许被返回的旧快照整行盖回去", async () => {
+    await hydrateStore();
+    const sent: StickyInput[] = [];
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    backend.upsert = (input) => {
+      sent.push(input);
+      return gate.then(() => ({ ...input, deletedAt: null, createdAt: 1, updatedAt: 2 }));
+    };
+
+    updateNote("a", { body: "第一段" });
+    const inflight = flushNow();
+    // 上面那次落库还在路上，接着敲第二个字组
+    updateNote("a", { body: "第一段第二段" });
+    release();
+    await inflight;
+
+    expect(getNote("a")?.body).toBe("第一段第二段");
+    expect(sent).toHaveLength(1);
+    // 新的那一份没被吃掉：还在在途集合里，下一次 flush 照常送出去
+    updateNote("a", { title: "顺带改个标题" });
+    await flushNow();
+    expect(sent.at(-1)?.body).toBe("第一段第二段");
+    expect(sent.at(-1)?.title).toBe("顺带改个标题");
+  });
+
+  it("往返期间没再改过：仍然整行换成后端那份权威的（后端直改的字段要拉回来）", async () => {
+    await hydrateStore();
+    updateNote("a", { title: "甲二" });
+    await flushNow();
+    // 时间戳由后端权威回填（上一批用例已经钉过，这里当"整行换了"的可见记号）
+    expect(getNote("a")?.updatedAt).toBe(2);
+    expect(getNote("a")?.createdAt).toBe(1);
   });
 });
 

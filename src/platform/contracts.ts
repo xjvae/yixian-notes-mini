@@ -135,19 +135,76 @@ export interface WorkArea {
   height: number;
 }
 
-/** 私密便签锁在 private.json 里的真身。其余字段（几何/主题/标记）留在主库明文 */
-export interface SealedText {
+/**
+ * 封套里存的一版内容。口径与主库那张明文历史表一致：只有内容字段，没有摆位。
+ * `contentType` 跟着走——回滚一版清单到文本时，类型本身也是那一版的一部分。
+ */
+export interface SealedContent {
   title: string;
   body: string;
+  contentType: StickyContentType;
   items: StickyItem[];
   timeline: TimelineEntry[];
   tags: string[];
+}
+
+/** 私密便签的某一版历史。整份连封套一起加密，所以锁着就读不到 */
+export interface SealedRevision {
+  seq: number;
+  createdAt: number;
+  content: SealedContent;
+}
+
+/**
+ * 私密便签锁在 private.json 里的真身。其余字段（几何/主题/标记）留在主库明文。
+ * `revisions` 是这条的私有历史：明文表（`sticky_revisions`）压根不收私密便签，
+ * 真身只能跟着封套走——代价是"看历史"和"看便签"共用同一道口令门。
+ */
+export interface SealedText extends SealedContent {
+  revisions?: SealedRevision[];
 }
 
 /** 私密层状态：configured = 盘上有封套；unlocked = 会话密钥在内存里 */
 export interface PrivateStatus {
   configured: boolean;
   unlocked: boolean;
+}
+
+/**
+ * 一份整库快照 = `backups\mini-<label>.db` 加同名的私密封套副本。
+ * `label` 是 `20261012-094703` 形态（同秒再打一份会带 `-2` 尾巴），
+ * 恢复命令只认这个形状——它会被拼进文件名。
+ */
+export interface Snapshot {
+  label: string;
+  bytes: number;
+  /** 文件改动时间（毫秒） */
+  createdAt: number;
+  /** 带不带配套封套；不带 = 恢复后私密真身仍是当前那份，界面要说 */
+  hasEnvelope: boolean;
+}
+
+/** 一键恢复的结果。`safetyLabel` = 恢复**前**那一瞬被存成的那一份（选错了能回这里） */
+export interface RestoreReport {
+  restored: string;
+  safetyLabel: string;
+  envelopeRestored: boolean;
+  /** 不阻断恢复、但必须让人看见的话 */
+  warning: string | null;
+}
+
+/**
+ * 一张便签的某一版历史。存的是这张**被换掉之前**的内容形状（理由见
+ * `migrations/0009_revisions.sql`），所以列表里那一行读作"回到这一刻之前"。
+ * 私密便签不记版本，列表会是空的。
+ */
+export interface RevisionMeta {
+  seq: number;
+  createdAt: number;
+  title: string;
+  contentType: StickyContentType;
+  /** 那一版的头几十个字（清单/时间轴取第一条），给列表当辨认用 */
+  preview: string;
 }
 
 /**

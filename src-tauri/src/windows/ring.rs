@@ -78,7 +78,7 @@ pub async fn prewarm(app: &AppHandle) -> AppResult<()> {
 
 /// 快捷键/托盘唤起：以当前光标为中心，显示整盘
 pub async fn open(app: &AppHandle) -> AppResult<()> {
-    let cursor = cursor_position().unwrap_or((120, 120));
+    let cursor = monitor::cursor().unwrap_or((120, 120));
     reveal(app, cursor.0 as i32, cursor.1 as i32).await
 }
 
@@ -260,17 +260,6 @@ fn correct_to_press_point(
     if stays_inside {
         let _ = window.set_position(PhysicalPosition::new(left as i32, top as i32));
     }
-}
-
-/// 当前光标位置（物理像素）。失败返回 None，由调用方退回默认摆位
-fn cursor_position() -> Option<(i64, i64)> {
-    use windows::Win32::Foundation::POINT;
-    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
-    let mut point = POINT { x: 0, y: 0 };
-    // SAFETY：GetCursorPos 只往 &mut point 写两个 LONG，无其它输入；
-    // 返回值判 BOOL，FALSE 时不读 point 的内容。
-    let ok = unsafe { GetCursorPos(&mut point) }.is_ok();
-    ok.then_some((point.x as i64, point.y as i64))
 }
 
 #[cfg(test)]

@@ -66,6 +66,21 @@ pub async fn trash_restore(
     Ok(restored)
 }
 
+/// 回收站「一键清空」：所有软删行连图真删，返回清掉的条数。
+/// 口径与单条彻底删除一致——图跟着走、空组当场收掉，只是不枚举 id。
+#[tauri::command]
+pub async fn trash_clear_all(win: WebviewWindow, db: State<'_, Db>) -> AppResult<i64> {
+    let db = db.inner().clone();
+    let cleared = run_db(db, move |db| {
+        let cleared = trash::clear(db)?;
+        group::prune_empty(db)?;
+        Ok(cleared)
+    })
+    .await?;
+    emit_changed(&win, "sticky");
+    Ok(cleared)
+}
+
 /// 归组/移出（降级口径：只能移进**已有**组）。
 /// 归组 = 该便签收进叠窗，单窗就地销毁；移出 = 弹回桌面单窗。
 #[tauri::command]
@@ -189,7 +204,9 @@ pub async fn sticky_merge_into(
     Ok(merged.group_id)
 }
 
-fn emit_changed(win: &WebviewWindow, kind: &str) {
+/// 写完广播一次 `db:changed`。writer 是发起窗的 label，别的窗据此决定要不要重读。
+/// 历史版本那条命令（`commands/revision.rs`）走的是同一份，所以这里是 `pub(crate)`。
+pub(crate) fn emit_changed(win: &WebviewWindow, kind: &str) {
     let payload = serde_json::json!({ "writer": win.label(), "kind": kind });
     // 广播失败（窗正在销毁等）不阻断写路径：别的窗最多晚一轮刷新
     let _ = win.app_handle().emit("db:changed", payload);

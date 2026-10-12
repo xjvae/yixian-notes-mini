@@ -8,7 +8,7 @@ use rusqlite::Connection;
 use super::pool::Db;
 use crate::support::error::{AppError, AppResult};
 
-pub const TARGET_VERSION: i64 = 8;
+pub const TARGET_VERSION: i64 = 9;
 
 /// (目标版本, 整段 DDL)。执行顺序即数组顺序。
 const MIGRATIONS: &[(i64, &str)] = &[
@@ -20,6 +20,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (6, include_str!("../../migrations/0006_auto_size.sql")),
     (7, include_str!("../../migrations/0007_reminder.sql")),
     (8, include_str!("../../migrations/0008_dock_group.sql")),
+    (9, include_str!("../../migrations/0009_revisions.sql")),
 ];
 
 #[derive(Debug)]

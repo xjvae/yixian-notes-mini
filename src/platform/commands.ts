@@ -10,7 +10,10 @@ import type {
   MediaBytes,
   MediaMeta,
   PrivateStatus,
+  RestoreReport,
+  RevisionMeta,
   SearchHit,
+  Snapshot,
   StickyGroup,
   StickyInput,
   StickyNote,
@@ -119,6 +122,24 @@ export function trashRestore(id: string): Promise<boolean> {
   return invoke<boolean>("trash_restore", { id });
 }
 
+/** 回收站「一键清空」：所有软删行连图真删，返回清掉的条数 */
+export function trashClearAll(): Promise<number> {
+  return invoke<number>("trash_clear_all");
+}
+
+/**
+ * 一张便签的历史版本（新的在前）。存的是每次被换掉**之前**的内容；
+ * 私密便签恒为空表——那张表明文落盘，见 `migrations/0009_revisions.sql`。
+ */
+export function stickyRevisions(id: string): Promise<RevisionMeta[]> {
+  return invoke<RevisionMeta[]>("sticky_revisions", { id });
+}
+
+/** 回到某一版。只换内容，摆位/置顶/贴边/归组跟着现在走；现在这份会先被存成一版 */
+export function stickyRevert(id: string, seq: number): Promise<StickyNote> {
+  return invoke<StickyNote>("sticky_revert", { id, seq });
+}
+
 /** 子串检索（标题命中优先；私密/已删不进结果） */
 export function searchQuery(query: string): Promise<SearchHit[]> {
   return invoke<SearchHit[]>("search_query", { query });
@@ -162,6 +183,20 @@ export function getSetting(key: string): Promise<string | null> {
 /** 立即备份（VACUUM INTO 快照），返回备份文件完整路径 */
 export function dataBackup(): Promise<string> {
   return invoke<string>("data_backup");
+}
+
+/** 全部整库快照，新的在前（`backups\` 目录里数出来的） */
+export function snapshotList(): Promise<Snapshot[]> {
+  return invoke<Snapshot[]>("snapshot_list");
+}
+
+/**
+ * 一键恢复到指定快照：整库换回那一刻，**并且当场把私密层锁上**
+ * （内存里那把会话密钥对应的是换掉之前的封套）。
+ * 恢复前的状态会先自动存一份，返回值里的 `safetyLabel` 就是它。
+ */
+export function snapshotRestore(label: string): Promise<RestoreReport> {
+  return invoke<RestoreReport>("snapshot_restore", { label });
 }
 
 /**
@@ -236,6 +271,14 @@ export function privateUnlock(password: string): Promise<void> {
 
 export function privateLock(): Promise<void> {
   return invoke<void>("private_lock");
+}
+
+/**
+ * 「便签窗内刚才有人动了一下」——自动上锁那条时钟的唯一输入。
+ * 调用方（`useNoteActivity`）自己节流，别在每次按键上直连这条。
+ */
+export function privateNoteActivity(): Promise<void> {
+  return invoke<void>("private_note_activity");
 }
 
 /** 私密内容整份 JSON map（string → SealedText）。未解锁会拒绝 */

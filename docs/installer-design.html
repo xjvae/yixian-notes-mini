@@ -1,0 +1,1375 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>一闲笔记 mini · 安装向导改版方案</title>
+    <style>
+      /* ---------- 令牌：每个色值都来自应用自己 ----------
+         theme.ts 六色（paper/accent/ink）+ index.css 面板层。
+         文档自身的表面用 0 彩度的中性灰，不跟便签纸色混在一起：
+         鹅黄是"内容"，不是"这页的底色"。 */
+      :root {
+        --n-yellow-paper: #fbf2c7;
+        --n-yellow-ink: #4a3b12;
+        --n-yellow-accent: #b7791f;
+        --n-green-paper: #ddf3d5;
+        --n-green-accent: #388e3c;
+        --n-blue-paper: #d8ecfa;
+        --n-blue-accent: #1e72b8;
+        --n-pink-paper: #fbe0e4;
+        --n-pink-accent: #c04d6a;
+        --n-purple-paper: #eae2f8;
+        --n-purple-accent: #6b46c1;
+        --n-gray-paper: #eceef1;
+        --n-gray-accent: #4b5563;
+
+        --bg: #f3f3f4; /* 0 彩度：文档表面 */
+        --surface: #ffffff;
+        --ink: #17191c;
+        --ink-2: #3d4249;
+        --ink-3: #626871;
+        --rule: #dcdedf;
+        --rule-strong: #b9bcbf;
+        --brand: var(--n-yellow-accent);
+        --brand-deep: #8a5a12;
+        --danger: var(--n-pink-accent);
+        --ok: var(--n-green-accent);
+
+        --r-s: 3px;
+        --r-m: 6px;
+        --r-l: 12px;
+
+        --step--1: 12.5px;
+        --step-0: 14.5px;
+        --step-1: 17px;
+        --step-2: 21px;
+        --step-3: 27px;
+        --step-4: 38px;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        -webkit-text-size-adjust: 100%;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font:
+          var(--step-0) / 1.72 "Microsoft YaHei",
+          "PingFang SC",
+          system-ui,
+          sans-serif;
+      }
+      code,
+      .num {
+        font-family: Consolas, "Cascadia Mono", monospace;
+      }
+      code {
+        font-size: 0.86em;
+        background: #e9eaec;
+        padding: 0.5px 5px;
+        border-radius: var(--r-s);
+        color: #23262a;
+      }
+      .shell {
+        max-width: 1120px;
+        margin: 0 auto;
+        padding: 0 26px;
+      }
+
+      /* ---------- 开合：一张纸从右边滑进视野 ---------- */
+      .lede {
+        background: var(--surface);
+        border-bottom: 1px solid var(--rule);
+        padding: 62px 0 54px;
+        overflow: hidden;
+      }
+      .lede-grid {
+        display: grid;
+        grid-template-columns: minmax(300px, 1fr) minmax(494px, 494px);
+        gap: 46px;
+        align-items: center;
+      }
+      .lede h1 {
+        font-size: var(--step-4);
+        line-height: 1.18;
+        letter-spacing: -0.02em;
+        margin: 0 0 14px;
+        text-wrap: balance;
+      }
+      .lede .claim {
+        font-size: var(--step-1);
+        line-height: 1.62;
+        color: var(--ink-2);
+        margin: 0 0 26px;
+        max-width: 46ch;
+      }
+      .decisions {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        border-top: 1px solid var(--rule);
+      }
+      .decisions li {
+        display: grid;
+        grid-template-columns: 92px 1fr;
+        gap: 14px;
+        padding: 11px 0;
+        border-bottom: 1px solid var(--rule);
+        font-size: var(--step--1);
+      }
+      .decisions b {
+        color: var(--brand-deep);
+        font-weight: 600;
+      }
+      .decisions span {
+        color: var(--ink-2);
+      }
+
+      /* ---------- NSIS 对话框：客户端 494×268，按 1:1 ---------- */
+      .dlg {
+        width: 494px;
+        background: var(--surface);
+        border: 1px solid var(--rule-strong);
+        border-radius: var(--r-m);
+        font-size: 12px;
+        color: #1c1e20;
+      }
+      .dlg .tbar {
+        height: 30px;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        padding: 0 11px;
+        border-bottom: 1px solid #ececee;
+        color: #3c4045;
+      }
+      .dlg .tbar .close {
+        margin-left: auto;
+        color: #5c6167;
+      }
+      .dlg .stage {
+        display: flex;
+        /* 客户端 494×268：标题栏 30 + 这一栏 238 */
+        min-height: 238px;
+      }
+      .dlg .art {
+        width: 164px;
+        flex: 0 0 164px;
+        overflow: hidden;
+      }
+      /* NSIS 是把位图纵向压到 268 高的，所以这里用 fill 而不是 cover：
+         预览里看到的压缩率就是装出来那一台看到的 */
+      .dlg .art img {
+        display: block;
+        width: 164px;
+        height: 238px;
+        object-fit: fill;
+      }
+      .dlg .col {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+      }
+      .hdr {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        padding: 11px 13px 0;
+      }
+      .hdr .ht {
+        flex: 1;
+        min-width: 0;
+      }
+      .hdr .ht b {
+        display: block;
+        font-size: 13px;
+        letter-spacing: 0;
+        color: #17191c;
+      }
+      .hdr .ht i {
+        font-style: normal;
+        color: #5c6167;
+      }
+      .hdr .hb {
+        flex: 0 0 150px;
+        margin: -3px -5px 0 0;
+      }
+      /* 页头图不会被缩放，素材本身就是 150×57，一比一贴上去 */
+      .hdr .hb img,
+      .hdr .hb svg {
+        display: block;
+        width: 150px;
+        height: 57px;
+        object-fit: cover;
+        object-position: 50% 0;
+      }
+      .body {
+        flex: 1;
+        padding: 12px 15px 14px;
+      }
+      .body p {
+        margin: 0 0 9px;
+        line-height: 1.78;
+      }
+      .body .lead {
+        font-size: 13.5px;
+        font-weight: 600;
+        color: #17191c;
+        margin-bottom: 10px;
+      }
+      .body .dim {
+        color: #5c6167;
+      }
+      .body .sq {
+        color: var(--danger);
+        font-weight: 600;
+      }
+      .path {
+        display: flex;
+        gap: 6px;
+        margin: 9px 0;
+      }
+      .path .f {
+        flex: 1;
+        padding: 4px 7px;
+        border: 1px solid #b9bcbf;
+        border-radius: var(--r-s);
+        background: #fff;
+        font-size: 11px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .path .b,
+      .cons {
+        border: 1px solid #cfd2d5;
+        background: #fafafb;
+        border-radius: var(--r-s);
+      }
+      .path .b {
+        padding: 4px 10px;
+        font-size: 11px;
+        color: #3c4045;
+      }
+      .cons {
+        height: 58px;
+        margin: 9px 0;
+        padding: 6px 8px;
+        overflow: hidden;
+        font:
+          11px / 1.65 Consolas,
+          monospace;
+        color: #4a4f55;
+      }
+      .ck {
+        display: flex;
+        gap: 8px;
+        align-items: flex-start;
+        margin: 8px 0;
+      }
+      .ck i {
+        flex: 0 0 12px;
+        width: 12px;
+        height: 12px;
+        margin-top: 3px;
+        border: 1px solid #7e838a;
+        border-radius: 2px;
+        background: #fff;
+      }
+      .ck.on i {
+        background: var(--brand);
+        border-color: var(--brand-deep);
+      }
+      .ck.on i::after {
+        content: "";
+        display: block;
+        width: 6px;
+        height: 3px;
+        margin: 2px 0 0 2px;
+        border: 2px solid #fff;
+        border-top: 0;
+        border-right: 0;
+        transform: rotate(-45deg) translate(0, -1px);
+      }
+      .bar {
+        height: 18px;
+        border: 1px solid #c9ccd0;
+        border-radius: var(--r-s);
+        background: #fff;
+        padding: 2px;
+      }
+      .bar em {
+        display: block;
+        height: 100%;
+        width: 58%;
+        background: var(--brand);
+        border-radius: 1px;
+        animation: fill 3.4s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+      }
+      @keyframes fill {
+        0% {
+          width: 8%;
+        }
+        70%,
+        100% {
+          width: 92%;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .bar em {
+          animation: none;
+          width: 58%;
+        }
+        .dlg {
+          transition: none;
+        }
+      }
+      .sbar {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        padding: 9px 13px;
+        background: #f4f4f5;
+        border-top: 1px solid #e4e5e7;
+        border-radius: 0 0 var(--r-m) var(--r-m);
+        font-size: 11px;
+        color: #5c6167;
+      }
+      .sbar .sp {
+        margin-right: auto;
+      }
+      .bt {
+        min-width: 76px;
+        padding: 4px 12px;
+        text-align: center;
+        border: 1px solid #b1b5b9;
+        border-radius: var(--r-s);
+        background: #fbfbfc;
+        color: #2a2d31;
+      }
+      .bt.go {
+        border-color: var(--brand-deep);
+        background: var(--brand);
+        color: #241a04; /* 4.7:1；#2B1E05 只差到 4.47，11px 不算大字 */
+        font-weight: 600;
+      }
+      .bt.rm {
+        border-color: #8f3449;
+        background: var(--danger);
+        color: #fff;
+        font-weight: 600;
+      }
+
+      /* ---------- 现状对照：一张 NSIS 默认图 vs 我们的 ---------- */
+      .versus {
+        padding: 54px 0 8px;
+      }
+      h2 {
+        font-size: var(--step-3);
+        line-height: 1.3;
+        letter-spacing: -0.015em;
+        margin: 0 0 6px;
+        text-wrap: balance;
+      }
+      .sub {
+        font-size: var(--step-1);
+        color: var(--ink-2);
+        margin: 0 0 26px;
+        max-width: 68ch;
+      }
+      .pair {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+        gap: 2px;
+        background: var(--rule);
+        border: 1px solid var(--rule);
+        border-radius: var(--r-l);
+        overflow: hidden;
+      }
+      .pair figure {
+        margin: 0;
+        background: var(--surface);
+        padding: 20px 22px 18px;
+      }
+      .pair figcaption {
+        font-size: var(--step--1);
+        color: var(--ink-3);
+        margin-top: 12px;
+      }
+      .pair figcaption b {
+        display: block;
+        color: var(--ink);
+        font-size: var(--step-0);
+        margin-bottom: 3px;
+      }
+      .pair .tag {
+        display: inline-block;
+        font-size: 11px;
+        padding: 1px 7px;
+        border-radius: 99px;
+        margin-bottom: 12px;
+      }
+      .tag.now {
+        background: #ececee;
+        color: #4a4f55;
+      }
+      .tag.new {
+        background: var(--n-yellow-paper);
+        color: var(--n-yellow-ink);
+      }
+
+      /* ---------- 色带：六色排成一条，不做十二张等大卡 ---------- */
+      .ramp {
+        display: flex;
+        height: 96px;
+        border-radius: var(--r-m);
+        overflow: hidden;
+        border: 1px solid var(--rule);
+      }
+      .ramp div {
+        flex: 1;
+        position: relative;
+        padding: 9px 11px;
+        font-size: 11.5px;
+        line-height: 1.5;
+      }
+      .ramp div em {
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: 5px;
+      }
+      .ramp div b {
+        display: block;
+        font-weight: 600;
+      }
+      .ramp div code {
+        background: none;
+        padding: 0;
+        font-size: 10.5px;
+        opacity: 0.72;
+      }
+      .roles {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(215px, 1fr));
+        gap: 22px 30px;
+        margin: 22px 0 0;
+        font-size: var(--step--1);
+        color: var(--ink-2);
+      }
+      .roles b {
+        display: block;
+        color: var(--ink);
+      }
+
+      /* ---------- 七页序列 ---------- */
+      .seq {
+        padding: 54px 0 10px;
+      }
+      .step {
+        display: grid;
+        grid-template-columns: 54px minmax(0, 494px) minmax(240px, 1fr);
+        gap: 0 26px;
+        align-items: start;
+        padding: 30px 0;
+        border-top: 1px solid var(--rule);
+      }
+      .step:first-of-type {
+        border-top: 0;
+      }
+      .step .no {
+        font-size: var(--step-3);
+        line-height: 1;
+        color: #7d848c; /* 27px 属"大字"，但 1.7:1 的浅灰只算装饰，抬到 3:1 以上 */
+        font-variant-numeric: tabular-nums;
+        padding-top: 4px;
+      }
+      .step .why {
+        font-size: var(--step--1);
+        color: var(--ink-2);
+        max-width: 34ch;
+      }
+      .step .why b {
+        display: block;
+        font-size: var(--step-0);
+        color: var(--ink);
+        margin-bottom: 5px;
+      }
+      @media (max-width: 1080px) {
+        .lede-grid,
+        .step {
+          grid-template-columns: minmax(0, 494px);
+          justify-content: center;
+        }
+        .step .no {
+          display: none;
+        }
+        .step .why {
+          grid-column: 1;
+          margin-top: 16px;
+          max-width: 494px;
+        }
+      }
+
+      /* ---------- 规格 / 配置 / 限制 ---------- */
+      .specs {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(268px, 1fr));
+        gap: 26px 34px;
+        padding: 26px 0 4px;
+      }
+      .spec h3 {
+        font-size: var(--step-0);
+        margin: 0 0 8px;
+      }
+      .spec p {
+        font-size: var(--step--1);
+        color: var(--ink-2);
+        margin: 0 0 8px;
+      }
+      .draw {
+        background: var(--surface);
+        border: 1px solid var(--rule);
+        border-radius: var(--r-m);
+        padding: 16px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 20px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: var(--step--1);
+        background: var(--surface);
+        border: 1px solid var(--rule);
+        border-radius: var(--r-l);
+        overflow: hidden;
+      }
+      th,
+      td {
+        padding: 10px 13px;
+        text-align: left;
+        border-bottom: 1px solid var(--rule);
+        vertical-align: top;
+      }
+      th {
+        background: #ececee;
+        color: var(--ink);
+        font-weight: 600;
+      }
+      tr:last-child td {
+        border-bottom: 0;
+      }
+      td code {
+        background: none;
+        padding: 0;
+        color: var(--brand-deep);
+      }
+      pre {
+        background: #1b1e22;
+        color: #dfe2e6;
+        padding: 16px 18px;
+        border-radius: var(--r-m);
+        font-size: 12.5px;
+        line-height: 1.75;
+        overflow-x: auto;
+        margin: 0 0 18px;
+      }
+      pre .p {
+        color: #d9a441;
+      }
+      pre .c {
+        color: #7e8791;
+      }
+      .limit {
+        background: var(--n-pink-paper);
+        border: 1px solid #e6b9c4;
+        border-radius: var(--r-m);
+        padding: 16px 18px;
+        margin: 22px 0;
+        font-size: var(--step--1);
+        color: #4c1f2b;
+      }
+      .limit b {
+        color: #7d1f38;
+      }
+      footer {
+        padding: 46px 0 70px;
+        font-size: var(--step--1);
+        color: var(--ink-3);
+      }
+      hr {
+        border: 0;
+        border-top: 1px solid var(--rule);
+        margin: 54px 0 0;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- ============ 开合：直接把改完的欢迎页摆出来 ============ -->
+    <section class="lede">
+      <div class="shell lede-grid">
+        <div>
+          <h1>装它的过程，<br />就是它本来的样子</h1>
+          <p class="claim">
+            现在这台机器上跑出来的向导，是 NSIS 的出厂默认：英文界面、NSIS
+            自己那张蓝窗格左幅、没有许可页、图标是别人的。
+            这一版换四样：语言、许可页、图标，以及把你给的那两张图做成向导认的尺寸挂上去。
+          </p>
+          <ul class="decisions">
+            <li><b>语言</b><span>只简体中文，不出语言选择器</span></li>
+            <li>
+              <b>许可页</b
+              ><span>加上，指 <code>LICENSE.zh-CN.txt</code>，英文原件不动</span>
+            </li>
+            <li><b>左幅</b><span>换掉 NSIS 默认那张，用你给的界面图</span></li>
+            <li><b>页头图</b><span>新增 150×57：产品名 + 那句 slogan</span></li>
+            <li><b>图标</b><span>安装包与卸载都用应用自己的 ico</span></li>
+            <li><b>步骤数</b><span>多一页协议：欢迎→协议→位置→进度→完成</span></li>
+          </ul>
+        </div>
+
+        <div class="dlg" aria-label="改版后的欢迎页">
+          <div class="tbar">
+            <svg width="13" height="13" viewBox="0 0 14 14" aria-hidden="true">
+              <rect width="14" height="14" rx="2" fill="#FBF2C7" />
+              <rect width="2.5" height="14" fill="#B7791F" />
+            </svg>
+            一闲笔记 mini 安装向导
+            <span class="close" aria-hidden="true">✕</span>
+          </div>
+          <div class="stage">
+            <div class="art">
+              <img
+                src="assets/installer-sidebar.png"
+                alt="左幅：四张便签卡竖排在绿色衬板上，文本、待办、提醒、时间轴"
+              />
+            </div>
+            <div class="col">
+              <div class="body" style="padding-top: 20px">
+                <p class="lead">欢迎安装 一闲笔记 mini</p>
+                <p>装到你自己的账户下，不需要管理员权限，也不弹授权框。</p>
+                <p class="dim">
+                  正在运行的旧版会被先关掉再覆盖。便签内容每 250
+                  毫秒落一次库，不会丢你正在打的字。
+                </p>
+              </div>
+              <div class="sbar">
+                <span class="sp">v1.2.4 · MIT</span>
+                <div class="bt">取消</div>
+                <div class="bt go">下一步</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 现状：换掉的那张图 ============ -->
+    <section class="versus shell">
+      <h2>最要紧的一处，是左边那张图</h2>
+      <p class="sub">
+        配置里 <code>sidebarImage</code> 留空时，MUI2 不会"什么都不画"，它会回落到自带的
+        <code>Contrib\Graphics\Wizard\win.bmp</code>。所以现在的向导挂的是 NSIS
+        的招牌图，跟一闲笔记没有半点关系。
+      </p>
+      <div class="pair">
+        <figure>
+          <span class="tag now">现在</span>
+          <svg
+            width="164"
+            height="150"
+            viewBox="0 0 164 314"
+            preserveAspectRatio="none"
+            aria-label="NSIS 默认左幅"
+          >
+            <rect width="164" height="314" fill="#dfe6ef" />
+            <rect y="0" width="164" height="126" fill="#c3d3e8" />
+            <rect x="20" y="152" width="124" height="15" rx="2" fill="#b9c6d6" />
+            <rect x="20" y="178" width="92" height="15" rx="2" fill="#c8d3e0" />
+            <rect x="20" y="204" width="110" height="15" rx="2" fill="#c8d3e0" />
+            <text
+              x="82"
+              y="70"
+              text-anchor="middle"
+              font-size="15"
+              fill="#5b6b80"
+              font-family="Consolas"
+            >
+              win.bmp
+            </text>
+          </svg>
+          <figcaption>
+            <b>NSIS 出厂图</b>
+            164×314，蓝灰窗格。装任何用默认模板的 Windows 应用都会看到它。
+          </figcaption>
+        </figure>
+        <figure>
+          <span class="tag new">改版</span>
+          <img
+            src="assets/installer-sidebar.png"
+            width="164"
+            height="150"
+            alt="新的左幅：四张便签卡竖排在绿色衬板上"
+          />
+          <figcaption>
+            <b>四张卡竖排，整张塞进 164×314</b>
+            你给的这张竖图本来就是左幅的比例，所以<b>一个像素都没裁</b>，只把 1481×2831
+            缩到 164×314（比例差 0.15%，看不出来）。NSIS 装的时候会再纵向压到 268
+            高，压完卡标题"文本便签""待办便签"还认得出，卡里的小字糊成纹理。
+          </figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <!-- ============ 色 ============ -->
+    <section class="shell" style="padding-top: 54px">
+      <h2>向导自己的颜色，一个都不新配</h2>
+      <p class="sub">
+        下面六个就是应用里那六张纸（<code>src/data/theme.ts</code>），按钮、进度条、警告全从这里取。
+        两张位图自带一套雾蓝和墨蓝，那是照片自己的颜色：只出现在图里，不参与状态语义。
+      </p>
+      <div class="ramp">
+        <div style="background: #fbf2c7; color: #4a3b12">
+          <em style="background: #b7791f"></em>
+          <b>鹅黄</b><code>#FBF2C7</code>
+        </div>
+        <div style="background: #ddf3d5; color: #1e3d20">
+          <em style="background: #388e3c"></em>
+          <b>豆绿</b><code>#DDF3D5</code>
+        </div>
+        <div style="background: #d8ecfa; color: #14314a">
+          <em style="background: #1e72b8"></em>
+          <b>天青</b><code>#D8ECFA</code>
+        </div>
+        <div style="background: #fbe0e4; color: #4c1f2b">
+          <em style="background: #c04d6a"></em>
+          <b>藕粉</b><code>#FBE0E4</code>
+        </div>
+        <div style="background: #eae2f8; color: #2e2354">
+          <em style="background: #6b46c1"></em>
+          <b>黛紫</b><code>#EAE2F8</code>
+        </div>
+        <div style="background: #eceef1; color: #1f2937">
+          <em style="background: #4b5563"></em>
+          <b>岩灰</b><code>#ECEEF1</code>
+        </div>
+      </div>
+      <div class="roles">
+        <div>
+          <b>主强调</b>鹅黄脊
+          <code>#B7791F</code>：主按钮、进度条、勾选态。全向导只有它在动。
+        </div>
+        <div>
+          <b>正文</b>近黑 <code>#17191C</code>，次要
+          <code>#5C6167</code>。灰字压在纸黄上会糊，所以正文一律落在白底上。
+        </div>
+        <div>
+          <b>危险</b>藕粉脊 <code>#C04D6A</code>：只给卸载那一页与"删除数据"那枚勾的警告。
+        </div>
+        <div>
+          <b>备用</b
+          >豆绿、天青只在左幅那块衬板上出现，黛紫哪里都不出现；三者都不做状态色。完成态用鹅黄本身。
+        </div>
+      </div>
+    </section>
+
+    <hr />
+
+    <!-- ============ 六页序列 ============ -->
+    <section class="seq shell">
+      <h2>欢迎之外，还有这六页</h2>
+      <p class="sub">
+        模板把左幅接到
+        <code>MUI_WELCOMEFINISHPAGE_BITMAP</code>，只有欢迎和完成两页用得到它；
+        中间几页走右上 150×57 页头图。下面按真实版式与真实尺寸画，按钮文案按 Windows
+        习惯。
+      </p>
+
+      <!-- 1 许可 -->
+      <div class="step">
+        <div class="no">1</div>
+        <div class="dlg">
+          <div class="tbar">一闲笔记 mini 安装向导<span class="close">✕</span></div>
+          <div class="stage">
+            <div class="col">
+              <div class="hdr">
+                <div class="ht"><b>许可协议</b><i>安装前请过一眼</i></div>
+                <div class="hb">
+                  <img
+                    src="assets/installer-header.png"
+                    alt="页头图：一闲笔记 mini 字标，下面一行轻松记录，随时整理"
+                  />
+                </div>
+              </div>
+              <div class="body">
+                <p class="dim">安装前请读一遍下面的许可协议，然后选择同意。</p>
+                <div class="cons">
+                  MIT 许可证<br />
+                  （本文件是仓库根目录 LICENSE 英文原件的中文译文……以英文原件为准。）<br /><br />
+                  Copyright (c) 2026 xjvae<br /><br />
+                  特此向任何获得本软件及其相关文档文件副本（以下简称"软件"）的人士免费授予许可，
+                  不受限制地处置该软件，包括使用、复制、修改、合并、出版、发行、再许可及/或出售
+                  软件的副本……
+                </div>
+                <p class="dim">
+                  接受上面的条款才能继续；不接受就点取消，这台电脑上什么都不装。
+                </p>
+              </div>
+              <div class="sbar">
+                <span class="sp"></span>
+                <div class="bt">&lt; 上一步</div>
+                <div class="bt go">我接受</div>
+                <div class="bt">取消</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="why">
+          <b>这一页原来是零</b>
+          模板里 <code>LICENSE ""</code> 是空串，MUI2 用
+          <code>!if "${LICENSE}" != ""</code> 把整页编译掉了。接上
+          <code>bundle &gt; licenseFile</code> 就出现，正文是那份中文译文。
+          <b>控件不是一枚勾而是"我接受"按钮</b>：MUI2 只有定义
+          <code>MUI_LICENSEPAGE_CHECKBOX</code>
+          才换成一枚复选框（画成"我同意/我不同意"两栏那种是 老 MUI 的
+          LicensePage，模板用的不是它），而且没同意之前"下一步"根本不存在。
+        </div>
+      </div>
+
+      <!-- 2 位置 -->
+      <div class="step">
+        <div class="no">2</div>
+        <div class="dlg">
+          <div class="tbar">一闲笔记 mini 安装向导<span class="close">✕</span></div>
+          <div class="stage">
+            <div class="col">
+              <div class="hdr">
+                <div class="ht"><b>安装位置</b><i>装在自己账户下，不动系统目录</i></div>
+                <div class="hb">
+                  <img src="assets/installer-header.png" alt="" />
+                </div>
+              </div>
+              <div class="body">
+                <p>程序将安装到这个文件夹：</p>
+                <div class="path">
+                  <div class="f">
+                    C:\Users\Administrator\AppData\Local\YixianNotesMini
+                  </div>
+                  <div class="b">浏览…</div>
+                </div>
+                <p class="dim">
+                  便签数据不在这里，它在
+                  <code>%APPDATA%\com.yixian.notes.mini.v2\</code>。
+                  换安装位置不会丢便签；但"开机启动"那条勾要取消再重新勾一次，
+                  它记的是旧路径。
+                </p>
+              </div>
+              <div class="sbar">
+                <span class="sp"></span>
+                <div class="bt">上一步</div>
+                <div class="bt">取消</div>
+                <div class="bt go">安装</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="why">
+          <b>把"数据在哪"放到装的时候说</b>
+          这句话现在埋在设置窗的注释里。挪过 exe 位置再报"开机没启动"的坑，
+          一半在这一步说一句就能省掉。按钮从这一页起由"下一步"变成"安装"。
+        </div>
+      </div>
+
+      <!-- 3 进度 -->
+      <div class="step">
+        <div class="no">3</div>
+        <div class="dlg">
+          <div class="tbar">一闲笔记 mini 安装向导<span class="close">✕</span></div>
+          <div class="stage">
+            <div class="col">
+              <div class="hdr">
+                <div class="ht"><b>正在安装</b><i>一闲笔记 mini 正在装进这台电脑</i></div>
+                <div class="hb">
+                  <img src="assets/installer-header.png" alt="" />
+                </div>
+              </div>
+              <div class="body">
+                <div class="bar"><em></em></div>
+                <p style="margin-top: 10px">正在准备 WebView2 运行库…</p>
+                <p class="dim">
+                  机器上已有则跳过；没有会联网下引导器，这一步最长一两分钟。
+                </p>
+              </div>
+              <div class="sbar">
+                <span class="sp"></span>
+                <div class="bt">取消</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="why">
+          <b>进度条是鹅黄脊色</b>
+          不用系统蓝。这一页的动效只有进度本身，装完即止，不加装饰性动画。
+        </div>
+      </div>
+
+      <!-- 4 完成 -->
+      <div class="step">
+        <div class="no">4</div>
+        <div class="dlg">
+          <div class="tbar">一闲笔记 mini 安装向导<span class="close">✕</span></div>
+          <div class="stage">
+            <div class="art">
+              <img src="assets/installer-sidebar.png" alt="" />
+            </div>
+            <div class="col">
+              <div class="body" style="padding-top: 20px">
+                <p class="lead">装好了</p>
+                <p>
+                  第一次启动会自动演一遍十二步引导：长按右键唤星环、新建便签、私密层与备份。
+                  不想看，引导窗右上角随时关。
+                </p>
+                <div class="ck on"><i></i>立即运行 一闲笔记 mini</div>
+                <div class="ck on"><i></i>创建桌面快捷方式</div>
+              </div>
+              <div class="sbar">
+                <span class="sp"></span>
+                <div class="bt go">完成</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="why">
+          <b>完成页有两枚勾，不是一枚</b>
+          模板同时插了 <code>MUI_FINISHPAGE_RUN</code>（立即运行）和
+          <code>MUI_FINISHPAGE_SHOWREADME_TEXT "$(createDesktop)"</code
+          >（创建桌面快捷方式），
+          左边画的就是这两枚。再加"开机自动启动"技术上做得到（<code>installerHooks</code>
+          这轮已经在用了），但它的状态住在注册表，装时勾上、进应用看到另一套，更容易糊涂。建议不加。
+        </div>
+      </div>
+
+      <!-- 5 已装过 -->
+      <div class="step">
+        <div class="no">5</div>
+        <div class="dlg">
+          <div class="tbar">一闲笔记 mini 安装向导<span class="close">✕</span></div>
+          <div class="stage">
+            <div class="col">
+              <div class="hdr">
+                <div class="ht">
+                  <b>这台电脑上已经装过了</b><i>已装 1.2.4，选一个操作</i>
+                </div>
+                <div class="hb">
+                  <img src="assets/installer-header.png" alt="" />
+                </div>
+              </div>
+              <div class="body">
+                <div class="ck on"><i></i>覆盖安装（便签数据一个字都不动）</div>
+                <div class="ck"><i></i>卸载</div>
+                <p class="dim">
+                  另外：模板现在写的是 <code>ALLOWDOWNGRADES "true"</code>，
+                  装旧版本它不拦，只警告一句。一天打十几个包的人会被这一条咬到。
+                </p>
+              </div>
+              <div class="sbar">
+                <span class="sp"></span>
+                <div class="bt">上一步</div>
+                <div class="bt">取消</div>
+                <div class="bt go">下一步</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="why">
+          <b>你最常撞的一页</b>
+          默认那句是机翻长句。改成"覆盖安装 / 卸载"两个动词开头的短句，
+          并把"数据不动"直接写进选项里。
+        </div>
+      </div>
+
+      <!-- 6 卸载 -->
+      <div class="step">
+        <div class="no">6</div>
+        <div class="dlg">
+          <div class="tbar">一闲笔记 mini 卸载<span class="close">✕</span></div>
+          <div class="stage">
+            <div class="art">
+              <svg
+                width="164"
+                height="238"
+                viewBox="0 0 164 314"
+                preserveAspectRatio="none"
+                aria-hidden="true"
+              >
+                <rect width="164" height="314" fill="#dfe6ef" />
+                <rect y="0" width="164" height="126" fill="#c3d3e8" />
+                <rect x="20" y="152" width="124" height="15" rx="2" fill="#b9c6d6" />
+                <rect x="20" y="178" width="92" height="15" rx="2" fill="#c8d3e0" />
+                <text
+                  x="82"
+                  y="70"
+                  text-anchor="middle"
+                  font-size="14"
+                  fill="#5b6b80"
+                  font-family="Consolas"
+                >
+                  win.bmp
+                </text>
+              </svg>
+            </div>
+            <div class="col">
+              <div class="body" style="padding-top: 16px">
+                <p class="lead">要移除一闲笔记 mini 吗？</p>
+                <div class="ck"><i></i>同时删除我的便签数据</div>
+                <p class="sq">
+                  勾上这条会连
+                  <code>%APPDATA%\com.yixian.notes.mini.v2\</code>
+                  一起删：便签、回收站里还没过期的、私密封套， 以及
+                  <code>backups\</code> 下那 10 份整库快照。全没，不可恢复。
+                </p>
+                <p class="dim">不勾就是只删程序，数据原样留着，下次装回来还在。</p>
+              </div>
+              <div class="sbar">
+                <span class="sp">默认不勾</span>
+                <div class="bt">取消</div>
+                <div class="bt rm">卸载</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="why">
+          <b>唯一一处必须把代价写在脸上</b>
+          那枚复选框是模板自带的，中文默认只说"删除应用程序数据"，
+          看不出删的是你的笔记和快照。这句走 <code>customLanguageFiles</code> 就能改。
+        </div>
+      </div>
+    </section>
+
+    <hr />
+
+    <!-- ============ 素材规格 ============ -->
+    <section class="shell" style="padding-top: 46px">
+      <h2>素材：三张，尺寸是死的</h2>
+      <p class="sub">
+        NSIS 这两处只吃 <b>24 位无压缩 BMP</b>，尺寸不对 <code>makensis</code> 直接报错。
+        页头图不会被缩放，可以放字；左幅会被纵向压到 268 高，不能放字。
+      </p>
+      <div class="specs">
+        <div class="spec">
+          <div class="draw">
+            <img
+              src="assets/installer-header.png"
+              width="150"
+              height="57"
+              alt="页头图成品尺寸：一闲笔记 mini 字标加 slogan"
+            />
+          </div>
+          <h3>页头图 <span class="num">150×57</span> 一比一</h3>
+          <p>
+            从 <code>便签软件界面图生成需求.png</code> 里取字标那一条（源图
+            <code>x71 y60 821×312</code>），产品名和那句 slogan
+            全在，笔记本和它的黑边一点没进来。 页头图不会被缩放，所以这 22px
+            高的字标在装出来的窗口里就是这里的样子。
+            <b>MUI2 默认把页头图画在左上</b>，右上那一版要在 <code>hooks.nsh</code> 里
+            <code>!define MUI_HEADERIMAGE_RIGHT</code> （它是全局开关，<code
+              >Interface.nsh</code
+            >
+            里只 <code>!ifdef</code>、从不 <code>!undef</code>，定义一次六个页都跟着走）。
+          </p>
+          <p><code>nsis.headerImage: "icons/installer-header.bmp"</code></p>
+        </div>
+        <div class="spec">
+          <div class="draw">
+            <img
+              src="assets/installer-sidebar.png"
+              width="82"
+              height="157"
+              alt="安装左幅（此处为 0.5 倍）"
+            />
+            <img
+              src="assets/installer-sidebar.png"
+              width="164"
+              height="238"
+              alt="左幅在对话框里的实际受压形状"
+              style="object-fit: fill"
+            />
+          </div>
+          <h3>左幅 <span class="num">164×314</span>，右边是它被压到 268 高之后</h3>
+          <p>
+            <code>便签软件界面图生成需求 (1).png</code> 整张缩过来，<b>不裁剪</b>：源图
+            1481×2831，比例 0.5231，对目标 0.5223 差 0.15%，所以缩完既没有腰斩的卡，
+            也没有变形。四张卡（文本 / 待办 / 提醒 / 时间轴）从上到下排满，钢笔在左下、
+            回形针和文件夹在右下，这些位置 NSIS
+            都不会盖东西。卡里的小字在这个尺度上糊成纹理，只有短标题还认得出——
+            <b>这就是它纵向压 15% 之后仍然能用的原因：能读到的都是短语</b>。
+            欢迎与完成两页共用它（MUI2 只有一个位图入口，做不到"完成页换色"）。
+          </p>
+          <p><code>nsis.sidebarImage: "icons/installer-sidebar.bmp"</code></p>
+        </div>
+        <div class="spec">
+          <div class="draw">
+            <svg
+              width="150"
+              height="57"
+              viewBox="0 0 150 57"
+              aria-label="备选：纯排印页头"
+            >
+              <rect width="150" height="57" fill="#fff" />
+              <rect x="0" y="16" width="5" height="26" fill="#B7791F" />
+              <text
+                x="14"
+                y="34"
+                font-size="15"
+                font-weight="700"
+                fill="#17191C"
+                font-family="Microsoft YaHei"
+              >
+                一闲笔记
+              </text>
+              <text x="14" y="48" font-size="9" fill="#626871" font-family="Consolas">
+                mini · v1.2.4
+              </text>
+            </svg>
+            <svg
+              width="82"
+              height="157"
+              viewBox="0 0 164 314"
+              aria-label="备选：纯色场左幅"
+            >
+              <rect width="164" height="314" fill="#FBF2C7" />
+              <rect width="6" height="314" fill="#B7791F" />
+            </svg>
+          </div>
+          <h3>备选：一张图都不要</h3>
+          <p>
+            页头只留产品名字标，左幅就是一块鹅黄纸加那道脊，什么都不画。
+            最克制、最像正经软件，也最不会在两三年后看着尴尬。
+            <b>如果这两张真图你觉得还是过了，就退到这里</b
+            >，配置完全一样，只是素材换成纯色 BMP。
+          </p>
+        </div>
+        <div class="spec">
+          <div class="draw">
+            <img
+              src="../src-tauri/icons/icon.ico"
+              width="96"
+              height="96"
+              alt="应用图标"
+            />
+          </div>
+          <h3>安装包 / 卸载图标 <span class="num">16–256</span></h3>
+          <p>
+            仓库里 <code>icons/icon.ico</code> 已经是多尺寸的，直接指过去。
+            现在两个字段都是空串，"添加或删除程序"里挂的是 NSIS 图标。
+          </p>
+          <p><code>nsis.installerIcon</code> / <code>nsis.uninstallerIcon</code></p>
+        </div>
+      </div>
+
+      <div class="limit">
+        <b>两张成品就在 <code>docs/assets/</code>。</b>
+        <code>installer-header.bmp</code> 25,818 字节、<code>installer-sidebar.bmp</code>
+        154,542 字节，BMP 头第 28 字节实测 <code>24</code>，就是 NSIS
+        唯一认的那种。页头是从
+        <code>便签软件界面图生成需求.png</code> 里取的一条（那是横图，
+        只能取一段），左幅是你新给的这张竖图整张缩放，<b>没裁</b>。 两步都在
+        <code>docs/assets/installer-assets.ps1</code> 里，改参数重跑就出一版新的，
+        重跑产物 MD5 一致（裁法是确定的，不是每次随机）。
+      </div>
+
+      <div class="limit">
+        <b>右下角那串水印已经抹掉了，一个像素没裁。</b>
+        字形按亮度 &gt; 250 扫出来在源图 x1231–1461 / y2763–2807，处理框取
+        <code>x1221–1471 / y2755–2815</code>；做法是框内每个像素按上下两条干净带（y2747 与
+        y2823）做垂直线性插值，再在框内收一圈 3×3 均值。尺寸、构图、四张卡全部原样。脚本
+        <code>docs/assets/wm-patch.ps1</code>，中间产物
+        <code>docs/assets/ref-sidebar-clean.png</code>，下面那张是成品底部 40 行的 4
+        倍放大。
+        <img
+          src="assets/sidebar-bottom-4x.png"
+          width="492"
+          height="120"
+          alt="成品左幅底部 40 行的 4 倍放大：抹平后剩下的渐变背景"
+          style="
+            display: block;
+            margin-top: 12px;
+            width: 100%;
+            max-width: 492px;
+            height: auto;
+            border: 1px solid #e6b9c4;
+            border-radius: var(--r-s);
+          "
+        />
+      </div>
+
+      <div class="limit">
+        <b>一处换不掉，先说清。</b>
+        模板只把 <code>SIDEBARIMAGE</code> 接到
+        <code>MUI_WELCOMEFINISHPAGE_BITMAP</code>，没有
+        <code>MUI_UNWELCOMEFINISHPAGE_BITMAP</code> 的入口。 所以<b
+          >卸载页的左幅仍是 NSIS 默认那张</b
+        >（上面第 6 页画的就是它本来的样子）。 要连它一起换，得自己维护
+        <code>nsis.template</code>（一份 30 KB 的 <code>installer.nsi</code>，此后每次升
+        Tauri 都要跟）。
+        我的建议是先接受：卸载是极少走到的一页，而那页真正要紧的那句警告，
+        改语言文件就够了。
+      </div>
+    </section>
+
+    <!-- ============ 文案 ============ -->
+    <section class="shell" style="padding-top: 22px">
+      <h2>要覆盖的中文</h2>
+      <p class="sub">
+        两条路，都装出来核对过：页面正文与标题走 <code>hooks.nsh</code> 里的 MUI2
+        <code>!define</code>；页眉那两行（标题 + 副标题）和 tauri 自己的提示句走
+        <code>nsis/SimpChinese.nsh</code> 重定义
+        <code>LangString</code
+        >。后者实测有效：页眉从"许可证协议"变成了"许可协议"，因为这份文件是在
+        <code>!insertmacro MUI_LANGUAGE</code> 之后 <code>!include</code> 的。
+      </p>
+      <table>
+        <tr>
+          <th style="width: 27%">字符串</th>
+          <th style="width: 33%">定稿</th>
+          <th style="width: 22%">为什么改</th>
+          <th style="width: 18%">走哪条路</th>
+        </tr>
+        <tr>
+          <td><code>MUI_WELCOMEPAGE_TITLE / _TEXT</code></td>
+          <td>欢迎安装 一闲笔记 mini + 两段正文</td>
+          <td>默认是"欢迎使用…安装程序"，客套</td>
+          <td>hooks !define</td>
+        </tr>
+        <tr>
+          <td><code>MUI_TEXT_LICENSE_TITLE / _SUBTITLE</code></td>
+          <td>许可协议 / 安装前请过一眼</td>
+          <td>默认"许可证协议 / 在安装 … 之前，请阅读许可证条款"</td>
+          <td>语言文件 LangString</td>
+        </tr>
+        <tr>
+          <td><code>MUI_LICENSEPAGE_TEXT_TOP / _BOTTOM</code></td>
+          <td>安装前请读一遍… / 接受上面的条款才能继续…</td>
+          <td>默认那句写"[我同意(I)]"，可按钮其实叫"我接受(I)"，两句自己打自己</td>
+          <td>hooks !define</td>
+        </tr>
+        <tr>
+          <td><code>MUI_TEXT_DIRECTORY_TITLE / _SUBTITLE</code></td>
+          <td>安装位置 / 装在自己账户下，不动系统目录</td>
+          <td>四个字够了，副标题去说免管理员</td>
+          <td>语言文件 LangString</td>
+        </tr>
+        <tr>
+          <td><code>MUI_DIRECTORYPAGE_TEXT_TOP / _DESTINATION</code></td>
+          <td>程序将安装到这个文件夹： / 安装位置</td>
+          <td>默认"目标文件夹"太泛</td>
+          <td>hooks !define</td>
+        </tr>
+        <tr>
+          <td><code>MUI_TEXT_INSTALLING_TITLE / _SUBTITLE</code></td>
+          <td>正在安装 / 一闲笔记 mini 正在装进这台电脑</td>
+          <td>默认那句带"请稍候"</td>
+          <td>语言文件 LangString</td>
+        </tr>
+        <tr>
+          <td><code>MUI_FINISHPAGE_TITLE / _TEXT</code></td>
+          <td>装好了 + 第一次启动会演十二步引导那句</td>
+          <td>与应用内文案同一口吻</td>
+          <td>hooks !define</td>
+        </tr>
+        <tr>
+          <td><code>MUI_UNCONFIRMPAGE_TEXT_TOP / _LOCATION</code></td>
+          <td>要移除…吗？ / 便签数据不在安装目录里…</td>
+          <td>默认看不出数据在哪</td>
+          <td>hooks !define</td>
+        </tr>
+        <tr>
+          <td><code>deleteAppData</code></td>
+          <td>同时删除我的便签数据（含快照，不可恢复）</td>
+          <td>默认"删除应用程序数据"看不出删的是笔记</td>
+          <td>语言文件 LangString</td>
+        </tr>
+        <tr>
+          <td><code>appRunning / appRunningOkKill</code></td>
+          <td>正在运行，安装会先关掉它；便签内容每 250 毫秒落一次库，不会丢</td>
+          <td>默认只说"请先关闭再重试"，人要自己找进程</td>
+          <td>语言文件 LangString</td>
+        </tr>
+        <tr>
+          <td><code>alreadyInstalledLong</code></td>
+          <td>…已经装在这台电脑上了。选一个操作，然后点下一步：</td>
+          <td>默认那句是机翻长句</td>
+          <td>语言文件 LangString</td>
+        </tr>
+      </table>
+      <p class="sub" style="margin-top: 14px">
+        两句改不动的：<b>标题栏仍是"YixianNotesMini 安装"</b>，因为模板写死
+        <code>Name "${PRODUCTNAME}"</code>，要中文得改
+        <code>productName</code>，那会连带改 exe
+        名和安装目录名。<b>位置页那枚按钮显示"下一步"而不是"安装"</b>，因为开始菜单那一页只是被
+        Pre 函数 Skip 掉，它仍在页链里，NSIS 就认为位置页后面还有页。
+      </p>
+    </section>
+
+    <!-- ============ 配置 ============ -->
+    <section class="shell" style="padding-top: 34px">
+      <h2>实际落地的配置</h2>
+      <pre>{
+  <span class="p">"bundle"</span>: {
+    <span class="p">"licenseFile"</span>: "../LICENSE.zh-CN.txt",        <span class="c">// 中文译文；英文原件 LICENSE 一个字没动</span>
+    <span class="p">"windows"</span>: {
+      <span class="p">"nsis"</span>: {
+        <span class="p">"languages"</span>: ["SimpChinese"],             <span class="c">// 只中文；语言包本机已带，不联网</span>
+        <span class="p">"installerIcon"</span>: "icons/icon.ico",
+        <span class="p">"uninstallerIcon"</span>: "icons/icon.ico",
+        <span class="p">"headerImage"</span>: "icons/installer-header.bmp",   <span class="c">// 150×57 24bit BMP</span>
+        <span class="p">"sidebarImage"</span>: "icons/installer-sidebar.bmp",  <span class="c">// 164×314 24bit BMP</span>
+        <span class="p">"installerHooks"</span>: "nsis/hooks.nsh",       <span class="c">// 页标题与正文的中文覆盖</span>
+        <span class="p">"customLanguageFiles"</span>: { "SimpChinese": "nsis/SimpChinese.nsh" }
+      }
+    }
+  }
+}
+<span class="c">// startMenuFolder 故意不设：模板是 !if "${STARTMENUFOLDER}" != "" 才插那一页，留空走 Skip</span>
+<span class="c">// installMode 默认就是 currentUser：装到自己账户下，不弹 UAC</span></pre>
+      <p class="sub" style="margin-top: 18px">
+        两份 <code>.nsh</code> 的分工是实测出来的，不是猜的：模板在顶部（各页宏之前）<code
+          >!include</code
+        >
+        <code>installerHooks</code>，所以页面文案用
+        <code>!define MUI_WELCOMEPAGE_TEXT</code> 这一类 MUI2 入口；而在所有
+        <code>!insertmacro MUI_LANGUAGE</code> 之后才
+        <code>!include</code> 语言文件，且这份会<b>顶掉</b> tauri 自带的那份。所以
+        <code>nsis/SimpChinese.nsh</code> 里 27 条 <code>LangString</code> 一条都不能少，
+        少一条 <code>makensis</code> 就在 <code>$(deleteAppData)</code> 那种引用处断掉。
+        两个文件都必须是 <b>UTF-8 带 BOM</b>，否则中文在 NSIS 里是乱码。
+      </p>
+    </section>
+
+    <footer class="shell">
+      三条都按你定的做了：左幅整张缩放不裁、右下角水印抹平、协议正文换成中文译文（英文原件
+      <code>LICENSE</code> 一个字没动）。两个 BMP 进了
+      <code>src-tauri/icons/</code>，配置改成上面那份，两份 <code>.nsh</code> 写在
+      <code>src-tauri/nsis/</code>，版本三处手改成
+      <b>1.2.5</b
+      >，包打出来了：<code>src-tauri\target\release\bundle\nsis\YixianNotesMini_1.2.5_x64-setup.exe</code>，2.03
+      MiB，makensis 零警告。 装出来核对过的：欢迎页（左幅 +
+      中文正文）、协议页（中文正文不糊、页眉"许可协议 /
+      安装前请过一眼"、页头图在右上）、位置页（页眉 + 正文 +
+      那格"安装位置"）。走到位置页点取消，什么都没装：<code
+        >%LOCALAPPDATA%\YixianNotesMini</code
+      >
+      至今不存在。没核对到的：进度页、完成页、"已经装过"那页、卸载页，这四页要真装一次才看得见。还有一处我在捕获图里判不准：欢迎页正文第二段每行中间像被划了一道，换行写法改成
+      <code>$\r$\n</code> 之后一模一样，所以分不清是 8pt
+      中文回退字体真这么画，还是抓帧的锅。 你自己开包看一眼最快，走到欢迎页就能看见。
+    </footer>
+  </body>
+</html>

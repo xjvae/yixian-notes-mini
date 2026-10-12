@@ -10,7 +10,9 @@ pub mod hook;
 pub mod hotkey;
 pub mod media;
 pub mod private;
+pub mod revision;
 pub mod search;
+pub mod snapshot;
 pub mod window;
 
 use crate::db::pool::Db;
