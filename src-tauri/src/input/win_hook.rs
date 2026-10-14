@@ -83,6 +83,16 @@ type OpenSender = SyncSender<RingEvent>;
 /// 之后只有 try_send，本就没有需要互斥的写。
 static OPEN_SENDER: OnceLock<OpenSender> = OnceLock::new();
 
+/// 通道满被丢的事件分格计数。丢的代价按类分得很开：Open 丢了表现是"长按右键没反应"，
+/// Charging 丢了是"弧不亮"——一格一类，收账日志里分得开。回调只写原子（铁律 1 禁锁禁日志），
+/// 收账在消费线程（见 `report_dropped`）。
+static DROPPED: [AtomicU64; 4] = [
+    AtomicU64::new(0), // Open
+    AtomicU64::new(0), // Charging
+    AtomicU64::new(0), // Up
+    AtomicU64::new(0), // Dismiss
+];
+
 // —— 装配 ——
 
 /// `panic = "abort"` 下崩的那一趟走不到日志的收尾，而这一格若崩在启动里，真机上看到的
@@ -102,36 +112,45 @@ pub fn spawn(app: tauri::AppHandle) {
     {
         let app = app.clone();
         std::thread::spawn(move || {
+            use std::sync::mpsc::RecvTimeoutError;
             use tauri::Emitter;
-            for event in receiver {
-                match event {
-                    RingEvent::Open { x, y } => {
-                        let app = app.clone();
-                        tauri::async_runtime::spawn(async move {
-                            // ring:open 的广播与矩形公告都在 ring.rs::reveal 里做——出盘只有一条路，别重复发
-                            if let Err(e) = crate::windows::ring::open_at(&app, x, y).await {
-                                log::warn("input", &format!("唤起星环失败：{e}"));
+            // recv 带 1s 超时：事件来了派发，收不到也醒来查一次丢事件账
+            //（丢只发生在钩子回调，而回调禁日志，账只能在这条消费线程上报，见 report_dropped）
+            let mut reported = [0u64; 4];
+            loop {
+                match receiver.recv_timeout(Duration::from_secs(1)) {
+                    Ok(event) => match event {
+                        RingEvent::Open { x, y } => {
+                            let app = app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                // ring:open 的广播与矩形公告都在 ring.rs::reveal 里做——出盘只有一条路，别重复发
+                                if let Err(e) = crate::windows::ring::open_at(&app, x, y).await {
+                                    log::warn("input", &format!("唤起星环失败：{e}"));
+                                }
+                            });
+                        }
+                        // 到这里已是引导期走完、手还按着（不是按下即亮）。兜两道：开关关掉或盘还驻留
+                        // 就什么都不做——充电态要把同一个窗改成鼠标穿透，会把用户正在看的盘点掉。
+                        RingEvent::Charging { x, y, hold_ms } => {
+                            if !crate::input::charging() || crate::input::ring_present() {
+                                continue;
                             }
-                        });
-                    }
-                    // 到这里已是引导期走完、手还按着（不是按下即亮）。兜两道：开关关掉或盘还驻留
-                    // 就什么都不做——充电态要把同一个窗改成鼠标穿透，会把用户正在看的盘点掉。
-                    RingEvent::Charging { x, y, hold_ms } => {
-                        if !crate::input::charging() || crate::input::ring_present() {
-                            continue;
+                            if let Err(e) = crate::windows::ring::show_charging(&app, x, y, hold_ms) {
+                                log::warn("input", &format!("亮起充电弧失败：{e}"));
+                            }
                         }
-                        if let Err(e) = crate::windows::ring::show_charging(&app, x, y, hold_ms) {
-                            log::warn("input", &format!("亮起充电弧失败：{e}"));
+                        // 弧淡出：只广播**不 hide 窗口**——90ms 淡出归前端画，画完它自己调 close_ring_window
+                        RingEvent::Up => {
+                            let _ = app.emit("ring:up", ());
                         }
-                    }
-                    // 弧淡出：只广播**不 hide 窗口**——90ms 淡出归前端画，画完它自己调 close_ring_window
-                    RingEvent::Up => {
-                        let _ = app.emit("ring:up", ());
-                    }
-                    RingEvent::Dismiss => {
-                        let _ = app.emit("ring:dismiss", ());
-                    }
+                        RingEvent::Dismiss => {
+                            let _ = app.emit("ring:dismiss", ());
+                        }
+                    },
+                    Err(RecvTimeoutError::Disconnected) => break,
+                    Err(RecvTimeoutError::Timeout) => {}
                 }
+                report_dropped(&mut reported);
             }
         });
     }
@@ -373,8 +392,37 @@ fn step_and_execute(event: Event) {
 }
 
 fn notify(event: RingEvent) {
-    if let Some(sender) = OPEN_SENDER.get() {
-        let _ = sender.try_send(event);
+    let Some(sender) = OPEN_SENDER.get() else {
+        return;
+    };
+    if let Err(err) = sender.try_send(event) {
+        // try_send 失败把事件还回来：按类记账（回调和消费线程之间没有别的信道可用）
+        let slot = match &err {
+            std::sync::mpsc::TrySendError::Full(e) | std::sync::mpsc::TrySendError::Disconnected(e) => {
+                match e {
+                    RingEvent::Open { .. } => 0,
+                    RingEvent::Charging { .. } => 1,
+                    RingEvent::Up => 2,
+                    RingEvent::Dismiss => 3,
+                }
+            }
+        };
+        DROPPED[slot].fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// 消费线程周期收账（回调禁日志，丢的账只能在这里报）：有增量才出一行，常态是无事发生
+fn report_dropped(reported: &mut [u64; 4]) {
+    const NAMES: [&str; 4] = ["Open", "Charging", "Up", "Dismiss"];
+    for (slot, name) in NAMES.iter().enumerate() {
+        let now = DROPPED[slot].load(Ordering::Relaxed);
+        if now > reported[slot] {
+            log::warn(
+                "input",
+                &format!("事件通道满，丢了 {} 条 {name}（累计 {now}）", now - reported[slot]),
+            );
+            reported[slot] = now;
+        }
     }
 }
 

@@ -1,8 +1,6 @@
-// 预览台宿主（父页）— 持假数据核，按 label 管 iframe，把命令的窗口副作用落成真实框。
-// 拦在桥这一层（DevBridge）而不是拦 Backend：store、去抖落库、跨窗合流、私密层包装、窗组件全走真路径；
-// 这里验的是前端行为不是 Rust 行为——Rust 语义要逐条跟抄进 fake-db.ts，抄漏了预览台就在骗人。
-// 未覆盖（在这儿验不出来）：真拖动（原生 drag-region 在 iframe 里点不动）、贴边细丝、多显示器/DPI、WH_MOUSE_LL；
-// 摆位用右侧面板数值框注入 moved/resized，够把"几何合流 + 最小尺寸纠偏"这条链路跑通。
+// 预览台宿主（父页）— 持假数据核，按 label 管 iframe，把命令的窗口副作用落成真实框。拦在桥这层
+// （DevBridge）验前端行为；Rust 语义要逐条跟抄进 fake-db.ts，抄漏了预览台就在骗人。
+// 验不出（别当已验）：真拖动、贴边细丝、多显示器/DPI、WH_MOUSE_LL；摆位用右侧面板数值框注入 moved/resized。
 
 import type { FloatFrame, StickyNote } from "@/platform/contracts";
 import {

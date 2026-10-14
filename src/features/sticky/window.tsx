@@ -353,7 +353,7 @@ export function StickyWindow() {
               <button
                 type="button"
                 aria-label="收回贴边"
-                title="收回贴边（拖离边缘可解除贴边）"
+                title="收回贴边"
                 onClick={() => dock.toggleReveal()}
                 className="rounded p-1 transition-colors hover:bg-black/10"
                 style={{ color: theme.accent }}

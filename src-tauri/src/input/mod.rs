@@ -88,16 +88,21 @@ pub fn set_paused(paused: bool) {
     PAUSED.store(paused, Ordering::Relaxed);
 }
 
-/// 写白名单：过 allowlist::parse_list 归一（基名/去重/截断），采样线程下一轮生效
+/// 写白名单：过 allowlist::parse_list 归一（基名/去重/截断），采样线程下一轮生效。
+/// poison 可恢复（Cargo.toml 硬规）：白名单更新被静默丢弃比死锁更难查，锁死数据自身是干净的。
 pub fn set_whitelist(raws: &[String]) {
     let list = allowlist::parse_list(raws);
-    if let Ok(mut guard) = WHITELIST.write() {
-        *guard = list;
-    }
+    let mut guard = WHITELIST
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *guard = list;
 }
 
 pub fn whitelist() -> Vec<String> {
-    WHITELIST.read().map(|guard| guard.clone()).unwrap_or_default()
+    WHITELIST
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
 }
 
 /// 最近采样到的前台进程基名（设置界面的「上一个前台程序」）

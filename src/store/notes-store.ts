@@ -87,6 +87,29 @@ export function getTitlesSnapshot(): ReadonlyMap<string, string> {
   return lastTitles;
 }
 
+/** 每叠一份的成员快照缓存：key 是 groupId，值只在"这一叠的成员进出或成员对象换代"时才换引用 */
+const membersCache = new Map<string, readonly StickyNote[]>();
+
+/** 某一叠的成员快照（保持列表序，= updated_at DESC，见 stack-model 口径）。
+ *  与全量 `getNotesSnapshot()` 的差别在引用稳定性：**别的**叠里敲一个字，这一叠的快照引用不动，
+ *  叠窗就不会被别人的编辑带着重渲。本叠成员更新（对象换代）当然要换引用——正文要跟着画 */
+export function getMembersSnapshot(groupId: string): readonly StickyNote[] {
+  const fresh: StickyNote[] = [];
+  for (const row of listCache) {
+    if (row.groupId === groupId && !row.deleted) fresh.push(row);
+  }
+  const cached = membersCache.get(groupId);
+  if (
+    cached !== undefined &&
+    cached.length === fresh.length &&
+    cached.every((row, index) => row === fresh[index])
+  ) {
+    return cached;
+  }
+  membersCache.set(groupId, fresh);
+  return fresh;
+}
+
 export function isStoreReady(): boolean {
   return hydrated;
 }

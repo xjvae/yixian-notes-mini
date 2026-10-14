@@ -1,13 +1,6 @@
-// IconPicker — 页脚那个"给这张便签挑个签上记号"的小弹层。
-//
-// 为什么值得单独一个文件：NoteContent 已经把四类正文、标签、私密开关、字数条都排在一行
-// 里了，再塞一个 16 格的选板进去就没人能读懂那段 JSX。
-//
-// 触发那颗钮画的是**图章**，不是当前那个记号：签上（侧边色块签）已经画着现状，再抄一份
-// 到页脚就会跟类型转换那一排撞成同一个字形（文本便签尤其明显）。现在"这张是谁的记号"
-// 写在 aria/title 里。选板里"这一个"该高亮就高亮：那是结果，不是操作。
-//
-// 收场照组菜单那套：点外面或 Esc。窗内浮层拿不到系统级焦点，只能自己听。
+// IconPicker — 页脚"挑签上记号"的小弹层（单拆文件：NoteContent 已排满，再塞 16 格选板没人读得懂）。
+// 触发钮画的是图章不是当前记号：签上已画着现状，再抄一份会跟类型转换排撞成同一字形；
+// 选板里"这一个"该高亮就高亮（那是结果不是操作）。收场照组菜单那套：点外面或 Esc。
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Stamp } from "lucide-react";
@@ -63,7 +56,7 @@ export function IconPicker({ id, note }: IconPickerProps) {
             : "换图标"
         }
         aria-expanded={open}
-        title="签上画哪个记号（侧边色块签就是这一个）"
+        title="换图标"
         onClick={() => setOpen((prev) => !prev)}
         className="rounded p-1 transition-colors hover:bg-black/10"
         style={{ color: theme.accent }}

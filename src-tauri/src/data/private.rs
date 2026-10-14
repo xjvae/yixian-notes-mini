@@ -315,7 +315,7 @@ pub fn master_and_envelope(
         &envelope.verify.nonce,
         &envelope.verify.ciphertext,
     )?;
-    if opened != VERIFY_PLAINTEXT {
+    if opened.as_slice() != VERIFY_PLAINTEXT {
         // 到不了这里（AEAD tag 已判完），留着是防御：错误口径不变
         return Err(crypto_open());
     }
@@ -335,7 +335,7 @@ fn unwrap_wrapped(
     if raw.len() != crypto::KEY_LEN {
         return Err(crypto_open());
     }
-    Ok(Some(Zeroizing::new(raw)))
+    Ok(Some(raw))
 }
 
 /// 旧逐条密文共用的那把整层钥匙（`contentKey`）。封套里没有 → None = 没有旧数据要迁
@@ -384,7 +384,7 @@ pub fn open_note_key(master: &[u8], id: &str, packed: &[u8]) -> AppResult<Zeroiz
     if raw.len() != crypto::KEY_LEN {
         return Err(crypto_open());
     }
-    Ok(Zeroizing::new(raw))
+    Ok(raw)
 }
 
 pub fn new_note_key() -> Zeroizing<Vec<u8>> {
@@ -431,7 +431,8 @@ pub fn setup(vault: &PrivateVault, password: &str) -> AppResult<()> {
 }
 
 /// 封套是否"整份 map 住在里面"的 v1 形状；是→Some(解开后的 map JSON)。迁移唯一入口，master 由调用方拿着。
-pub fn legacy_map(envelope: &Envelope, master: &[u8]) -> AppResult<Option<String>> {
+/// JSON 明文同样 Zeroizing：迁移中途出错丢弃即擦除，不留旧数据全文在堆上。
+pub fn legacy_map(envelope: &Envelope, master: &[u8]) -> AppResult<Option<Zeroizing<String>>> {
     let Some(block) = envelope.data.as_ref() else {
         return Ok(None);
     };
@@ -442,7 +443,10 @@ pub fn legacy_map(envelope: &Envelope, master: &[u8]) -> AppResult<Option<String
         ));
     }
     let bytes = crypto::open(master, AAD_DATA_V1, &block.nonce, &block.ciphertext)?;
-    String::from_utf8(bytes).map(Some).map_err(|_| crypto_open())
+    // 严格 UTF-8 校验后转 String 并包 Zeroizing：解密缓冲与 JSON 字符串丢弃时都擦除
+    std::str::from_utf8(&bytes)
+        .map(|json| Some(Zeroizing::new(json.to_string())))
+        .map_err(|_| crypto_open())
 }
 
 /// 迁移落定：**留底在前**——先拷 v1 留底再写 v2（data 没了）；写失败旧数据还在可重跑，反过来先丢唯一旧 map。

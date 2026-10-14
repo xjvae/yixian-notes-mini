@@ -1,7 +1,7 @@
 {
-  "identifier": "main",
-  "description": "全窗口基线能力：事件、置顶、拖动、收起/贴边/提醒卡用的尺寸与位置。当前是一份所有窗共用的表（windows 为 *）——原计划'随各窗落地按 label 收窄'没做，别再当已做的事读",
-  "windows": ["*"],
+  "identifier": "float-windows",
+  "description": "便签浮窗（label = sticky-<id>）与叠窗（stickygrp-<gid>）：置顶、拖动条、贴边/收起的尺寸位置读写、原生最小尺寸撤还，以及正文里的外链打开（open-link 只出现在 sticky 的渲染树里）",
+  "windows": ["sticky-*", "stickygrp-*"],
   "permissions": [
     "core:default",
     "core:window:allow-set-always-on-top",

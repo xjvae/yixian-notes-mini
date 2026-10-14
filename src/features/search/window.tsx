@@ -31,14 +31,22 @@ export function SearchWindow() {
   const [result, setResult] = useState<SearchOutcome | null>(null);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  // 防抖取消不了已经在途的 IPC：慢的旧响应回来会把新查询的结果整个覆盖掉。
+  // 序号守卫——只有"当前最新一次"的响应有资格上屏（trash/guide 的 cancelled 惯用法同源）
+  const seqRef = useRef(0);
 
   const runSearch = useCallback((value: string): void => {
+    const seq = ++seqRef.current;
     void searchQuery(value)
       .then((outcome) => {
+        if (seq !== seqRef.current) return;
         setResult(outcome);
         setError(null);
       })
-      .catch((err: unknown) => setError(String(err)));
+      .catch((err: unknown) => {
+        if (seq !== seqRef.current) return;
+        setError(String(err));
+      });
   }, []);
 
   useEffect(() => {

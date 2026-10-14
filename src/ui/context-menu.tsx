@@ -1,18 +1,8 @@
-// ContextMenu — 窗内自己画的右键菜单（便签用；星环是盘、不是菜单，两回事）。
-//
-// 为什么不用系统菜单：无框透明窗里 `window.requestMenu` 那套在 Windows 上给的是
-// 原生菜单的样子，跟这张纸的配色对不上，也带不动"删掉这张图"这种应用内动作。
-//
-// 三条实现上的口径：
-//  · **夹在窗内**：菜单宽/高是定死的估算值（项数 × 行高），右键点在最右下角也不会
-//    把菜单甩出窗外——甩出去就是看不见的菜单，比没有菜单更糟；
-//  · 关掉的途径一条不少：点了别处、Esc、窗失焦（`window.blur`）。少一条就是留着一块
-//    盖住正文的板子；
-//  · 键盘可达：打开即聚焦第一项，上下键走，Enter 选，Esc 关。只给鼠标用的菜单
-//    在无障碍上等于没有。
+// ContextMenu — 窗内自绘右键菜单（不用系统菜单：样式对不上纸面配色，也带不动应用内动作）。
+// 口径：位置按真实尺寸夹回窗内；点别处 / Esc / 失焦均可关闭；键盘可达（上下键 + Enter + Esc）。
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { MenuAction, MenuActionId } from "@/features/sticky/note-menu";
+import type { MenuAction, MenuActionId } from "@/ui/menu-action";
 
 const MENU_WIDTH = 172;
 const EDGE = 6;
@@ -43,8 +33,7 @@ export function ContextMenu({
   const [placed, setPlaced] = useState({ left: x, top: y });
   const items = useRef<(HTMLButtonElement | undefined)[]>([]);
 
-  // 位置在画出来之后按真实尺寸夹一次：估算高度只对"甩出窗外"这一件事负责，
-  // 真尺寸算错就会留一截看不见的菜单
+  // 画出来后按真实尺寸夹回窗内（估算高度可能不准）
   useLayoutEffect(() => {
     const node = box.current;
     if (node === null) return;
@@ -74,7 +63,7 @@ export function ContextMenu({
       alive[next]?.focus();
     };
     const onPointerDown = (): void => onClose();
-    // 捕获阶段听：菜单自己那一下也会被点到，靠 stopPropagation 挡掉
+    // 捕获阶段听：菜单自己的点击靠 stopPropagation 挡掉
     window.addEventListener("keydown", onKey);
     window.addEventListener("pointerdown", onPointerDown, true);
     window.addEventListener("blur", onClose);
@@ -116,8 +105,7 @@ export function ContextMenu({
             />
           );
         }
-        // 这是第几个可选项 = 前面有几条非分隔线。不维护计数器（渲染期改外部变量是
-        // React 明确禁的），一共七来条，重数一遍比留一份状态便宜也不容易错
+        // 本项的下标 = 前面有几条非分隔线（渲染期不改外部变量，重数一遍最稳）
         const mine = actions
           .slice(0, position)
           .filter((earlier) => earlier.id !== "separator").length;

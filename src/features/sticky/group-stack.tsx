@@ -28,7 +28,7 @@ import {
   STICKY_DEFAULT_SIZE,
   STICKY_MIN_SIZE,
 } from "@/data/window-geometry";
-import { useNote, useNotes, useStoreStatus } from "@/store/hooks";
+import { useGroupMembers, useNote, useStoreStatus } from "@/store/hooks";
 import { flushNow, removeNote } from "@/store/notes-store";
 import {
   closeGroupStack,
@@ -59,7 +59,7 @@ import { requirePrivateUnlock } from "@/window/private-gate";
 import { type DockTarget, useDockSnap } from "@/window/use-dock-snap";
 import { DockSliver } from "@/window/dock-sliver";
 import type { DockEdge } from "@/platform/contracts";
-import { activeId, membersOf, neighborId, positionOf } from "@/window/stack-model";
+import { activeId, neighborId, positionOf } from "@/window/stack-model";
 import { GroupTabs } from "@/features/sticky/group-tabs";
 import { GroupAccordion } from "@/features/sticky/group-accordion";
 import { displayName } from "@/features/sticky/stack-view";
@@ -75,7 +75,8 @@ const MODE_HINT: Partial<Record<GroupPresentation, string>> = {
 
 export function GroupStackWindow() {
   const gid = getGroupId();
-  const notes = useNotes();
+  // 成员订阅走按叠快照：别的叠里敲字不动这里（全量 useNotes() 会，见 useGroupMembers）
+  const members = useGroupMembers(gid);
   const { resolved } = useScheme();
   const { ready } = useStoreStatus();
   /** 分页翻 / 侧边色块签 / 手风琴。开关在设置窗，切档立刻重排这一扇，不用重开 */
@@ -123,10 +124,6 @@ export function GroupStackWindow() {
       });
   }, [gid, draft]);
 
-  const members = useMemo(
-    () => (gid === null ? [] : membersOf(notes, gid)),
-    [notes, gid],
-  );
   /**
    * 贴边那一档：判定与动画全在 `use-dock-snap`，这里给的是**组行**那份 target——展开尺寸取
    * `groups.width/height`，落库走 `group_set_dock`。`group` 异步到之前按自由窗处理，到了且记着 docked 就补一次开机恢复。
@@ -549,7 +546,7 @@ export function GroupStackWindow() {
             <button
               type="button"
               aria-label="收回贴边"
-              title="收回贴边（拖离边缘可解除贴边）"
+              title="收回贴边"
               onClick={() => dock.toggleReveal()}
               className="rounded p-1 transition-colors hover:bg-black/10"
               style={{ color: theme.accent }}

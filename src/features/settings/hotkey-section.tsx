@@ -1,22 +1,11 @@
-// 热键节 — 全局快捷键的展示与改键（键盘捕获）。清单有几条由 Rust 那份表说了算
-// （`hotkeys.rs::DEFAULT_BINDINGS`，顺序也是它定），这里不写死条数——写死就是等着过期。
-// 三份抄本（Rust 表 / 预览台表 / 这里的动作名）由 `preview/hotkey-table.test.ts` 钉着。
-//
-// 捕获口径：点击「更改」进入捕获态，下一个按键组合即成为新键位（Esc 取消）。
-// 两条硬规则：
-//  · **必须带 Ctrl/Alt/Super 修饰**——光秃秃一个字母当全局热键，用户打字就触发了；
-//    Shift 不算修饰（Shift+X 是打大写的正常动作）。
-//  · 交给 Rust 的键名用 event.code（KeyA/Digit1/Space），与 global-hotkey 的解析器
-//    同一口径；展示时剥掉 Key/Digit 前缀。
-// 改键失败（被占用）Rust 会自动还原旧键并回错——这里如实显示错误，清单重拉。
-// 启动时就绑不上的键位（本机：Alt+Space 归别的程序）由 `bound` 说：那一行下面标一条
-// "没绑上"。不标就是显示着一个按下去什么都不发生的键，用户只能当成软件坏了。
+// 热键节 — 快捷键清单与改键捕获。清单条目由 Rust 表决定（hotkeys.rs::DEFAULT_BINDINGS），这里不写死。
+// 改键必须带 Ctrl/Alt/Super（Shift 不算），交给 Rust 的键名走 event.code。
+// 设置失败 Rust 自动还原旧键并回错；启动就没绑上的键位（bound=false）在该行下标注"没绑上"。
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { appSetHotkey, hotkeyList } from "@/platform/commands";
 import type { HotkeyBinding } from "@/platform/contracts";
-// 名字与写法在 `data/hotkey-labels.ts`，与引导教程第九步共用一份：
-// 两处各写一套，迟早一个念 Alt+1 一个念 Ctrl+1
+// 键位文案与引导教程共用 data/hotkey-labels，别两处各写一套
 import { ACTION_LABELS, prettyKey } from "@/data/hotkey-labels";
 
 export function HotkeySection() {
@@ -35,7 +24,7 @@ export function HotkeySection() {
     reload();
   }, [reload]);
 
-  // 进入捕获态的输入框自己拿焦点（autoFocus 被 a11y 规则禁用，语义等价地手动来）
+  // 捕获态输入框手动聚焦（autoFocus 被 a11y 规则禁用）
   useEffect(() => {
     if (capturing !== null) captureRef.current?.focus();
   }, [capturing]);
@@ -119,9 +108,8 @@ export function HotkeySection() {
               </div>
               {unbound && (
                 <p className="px-1 text-[11px] leading-snug text-amber-700">
-                  {prettyKey(binding.key)}{" "}
-                  没绑上——这个键归别的程序，按下去不会有任何反应。
-                  点上面那个键换个键位，或先长按右键唤出星环再从盘里走。
+                  {prettyKey(binding.key)} 被别的程序占用，按了没反应；
+                  点上面换个键位，或用长按右键的星环。
                 </p>
               )}
             </div>
@@ -133,10 +121,6 @@ export function HotkeySection() {
           {error}
         </p>
       )}
-      <p className="mt-1 text-[11px] text-[var(--panel-muted)]">
-        新键位必须带 Ctrl 或 Alt；被其它程序占用的键位设置不上，旧键会自动还原。
-        启动时就没绑上的键位会在那一行下面标出来。
-      </p>
     </div>
   );
 }

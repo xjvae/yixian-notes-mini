@@ -62,11 +62,11 @@ fn prune_old(logs_dir: &Path) {
     let Ok(entries) = std::fs::read_dir(logs_dir) else {
         return;
     };
-    let cutoff = clock::now_ms() - KEEP_DAYS * 24 * 60 * 60 * 1000;
+    let now = clock::now_ms();
     for entry in entries.flatten() {
         let Ok(meta) = entry.metadata() else { continue };
         let Ok(modified) = meta.modified() else { continue };
-        let age_ms = clock::now_ms()
+        let age_ms = now
             - modified
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as i64)
@@ -74,6 +74,5 @@ fn prune_old(logs_dir: &Path) {
         if age_ms > KEEP_DAYS * 24 * 60 * 60 * 1000 && meta.is_file() {
             let _ = std::fs::remove_file(entry.path());
         }
-        let _ = cutoff; // 保留期口径即上面的 age_ms 判定
     }
 }

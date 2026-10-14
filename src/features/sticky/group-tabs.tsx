@@ -1,28 +1,19 @@
-// 侧边色块签视图 — 正文还是一张大纸（可编辑，与分页那张是同一份 NoteContent），
-// 右缘一条签列：一张一块**方色签**，块上是这一张的类型图标（私密的给锁），点哪块翻哪张。
-//
-// 名字不排进列里。26px 宽里直排标题是一堵墙（上一版就这样，作者看了说"重新设计"），
-// 所以悬停或键盘聚焦到某块上时，在正文左下角浮一条「第 n/N · 标题」——列只管
-// "有哪几张、现在在哪张"，认名字这件事交给一条完整的横排字。
-//
-// 这一档**既不量也不等分**：块是死的尺寸（24×24）、从上往下堆、装不下由浏览器把这条变成
-// 可滚。第一版在这里算过 `tabRows(count, area)`，那次测量在叠窗 resize 后会不更新
-// （ResizeObserver / resize 可以不回调），签便按旧高度排：既裁一截又因为 overflow 是
-// hidden 而滚不动——预览台上把叠窗从高 300 改到 70 就复现了。定尺寸没有这种漂移面。
-//
-// 当前那块往正文那侧多探出 4px（28 宽 vs 24），"是这一张"靠这个错位说，不靠一整块深色
-// 压在纸边上。按 tablist 那套办：↑/↓ 环形换张（与翻页同一条心智：一叠没有头尾）、
-// Home/End 到首末、roving tabindex、当前块滚进视野——滚只动这一条容器自己的 scrollTop，
-// 不用 `scrollIntoView`（它会往上找可滚祖先，body 是 overflow:hidden 也照样被它挪走整扇窗）。
+// 侧边色块签视图 — 右缘一条签列：一张一块 24×24 方色签（块上是类型图标，私密给锁），点哪块翻哪张；
+// 正文仍是那张大纸（与分页同一份 NoteContent）。块是死尺寸、从上往下堆、装不下变可滚——
+// 不量也不等分（测量在叠窗 resize 后会不更新，签按旧高度排，预览台可复现）。
+// 名字不排进列（26px 直排标题是一堵墙）：悬停/聚焦时在正文左下角浮「第 n/N · 标题」。
+// 当前块往正文侧探出 4px 说"是这一张"；tablist 那套：↑/↓ 环形、Home/End、roving tabindex、
+// 当前块滚进视野（只动容器自己的 scrollTop，不用 scrollIntoView——它会挪走整扇窗）。
+// 色块签 memo 化：签只认"有谁/在哪张/什么主题"，没变的靠 memo 跳过重渲（键盘处理走 latest-ref 保稳）。
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { createElement, memo, useCallback, useEffect, useRef, useState } from "react";
 import { NoteContent } from "@/features/sticky/note-content";
 import { chipIconOf } from "@/features/sticky/note-icons";
 import { GroupMenu } from "@/features/sticky/group-menu";
 import { displayName, type StackViewProps } from "@/features/sticky/stack-view";
 import { isMasked, usePrivateState } from "@/data/private-state";
 import { themeColors } from "@/data/theme";
-import { useScheme } from "@/data/scheme";
+import { useScheme, type ResolvedScheme } from "@/data/scheme";
 import {
   neighborId,
   TAB_CHIP,
@@ -30,9 +21,72 @@ import {
   TAB_CHIP_PROTRUDE,
   TAB_WIDTH,
 } from "@/window/stack-model";
+import type { StickyNote } from "@/platform/contracts";
 
 /** 方签的圆角 */
 const CHIP_RADIUS = 8;
+
+const TabChip = memo(function TabChip({
+  member,
+  resolved,
+  masked,
+  isCurrent,
+  index,
+  total,
+  onPick,
+  onKeyDown,
+  onPeek,
+  onUnpeek,
+  registerRef,
+}: {
+  member: StickyNote;
+  resolved: ResolvedScheme;
+  masked: boolean;
+  isCurrent: boolean;
+  index: number;
+  total: number;
+  onPick: (id: string) => void;
+  onKeyDown: (event: React.KeyboardEvent<HTMLButtonElement>) => void;
+  onPeek: (id: string) => void;
+  onUnpeek: (id: string) => void;
+  registerRef: (id: string, node: HTMLButtonElement | null) => void;
+}) {
+  const theme = themeColors(member.theme, resolved);
+  const name = displayName(member);
+  // createElement 而非 <Icon/>：chipIconOf 是"查表返回既有组件"的函数，
+  // 大写变量接它的返回值会被 react-hooks/static-components 误判成渲染期造组件
+  const icon = chipIconOf(member, masked);
+  return (
+    <button
+      ref={(node) => {
+        registerRef(member.id, node);
+      }}
+      type="button"
+      role="tab"
+      aria-selected={isCurrent}
+      aria-label={`第 ${index + 1} 张，共 ${total} 张：${name}`}
+      title={`${name}（点一下翻到这张；↑↓ 换张）`}
+      tabIndex={isCurrent ? 0 : -1}
+      onClick={() => onPick(member.id)}
+      onKeyDown={onKeyDown}
+      onPointerEnter={() => onPeek(member.id)}
+      onPointerLeave={() => onUnpeek(member.id)}
+      onFocus={() => onPeek(member.id)}
+      onBlur={() => onUnpeek(member.id)}
+      className="flex shrink-0 cursor-pointer items-center justify-center border-0 transition-[width,filter] hover:brightness-110"
+      style={{
+        width: isCurrent ? TAB_CHIP + TAB_CHIP_PROTRUDE : TAB_CHIP,
+        height: TAB_CHIP,
+        borderRadius: CHIP_RADIUS,
+        backgroundColor: isCurrent ? theme.accent : `${theme.accent}2E`,
+        color: isCurrent ? theme.paper : theme.accent,
+        boxShadow: isCurrent ? `0 2px 8px ${theme.accent}55` : "none",
+      }}
+    >
+      {createElement(icon, { size: 13, "aria-hidden": true })}
+    </button>
+  );
+});
 
 export function GroupTabs({ members, currentId, onPick, onDelete }: StackViewProps) {
   const { resolved } = useScheme();
@@ -43,6 +97,13 @@ export function GroupTabs({ members, currentId, onPick, onDelete }: StackViewPro
   const [peekId, setPeekId] = useState<string | null>(null);
   const shown = members.find((member) => member.id === currentId) ?? members[0];
   const peek = members.find((member) => member.id === peekId) ?? null;
+
+  // latest-ref：键盘换张要读"最新的一叠与当前张"，但处理函数本身必须稳定，
+  // 否则 memo 住的色块签每次敲字都会拿到新回调而全体重渲（codebase 惯用法，见 note-content/geometry）
+  const latest = useRef({ members, shownId: shown?.id ?? null });
+  useEffect(() => {
+    latest.current = { members, shownId: shown?.id ?? null };
+  });
 
   /** 当前块滚进视野（只在签列这一格里滚；不需要滚时这几个赋值就是不动的空操作） */
   useEffect(() => {
@@ -70,23 +131,34 @@ export function GroupTabs({ members, currentId, onPick, onDelete }: StackViewPro
    * 可聚焦，而 roving tabindex 下焦点永远落在某一块上，挂这儿够用 */
   const onKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLButtonElement>): void => {
-      if (shown === undefined) return;
+      const { members: current, shownId } = latest.current;
+      if (shownId === null) return;
       const step = { ArrowDown: 1, ArrowUp: -1 }[event.key];
       if (step !== undefined) {
         event.preventDefault();
-        go(neighborId(members, shown.id, step));
+        go(neighborId(current, shownId, step));
         return;
       }
       if (event.key === "Home") {
         event.preventDefault();
-        go(members[0]?.id ?? null);
+        go(current[0]?.id ?? null);
       } else if (event.key === "End") {
         event.preventDefault();
-        go(members[members.length - 1]?.id ?? null);
+        go(current[current.length - 1]?.id ?? null);
       }
     },
-    [go, members, shown],
+    [go],
   );
+
+  const handlePeek = useCallback((id: string): void => {
+    setPeekId(id);
+  }, []);
+  const handleUnpeek = useCallback((id: string): void => {
+    setPeekId((prev) => (prev === id ? null : prev));
+  }, []);
+  const registerRef = useCallback((id: string, node: HTMLButtonElement | null): void => {
+    tabRefs.current.set(id, node);
+  }, []);
 
   return (
     <div className="relative flex h-full w-full overflow-hidden">
@@ -108,45 +180,22 @@ export function GroupTabs({ members, currentId, onPick, onDelete }: StackViewPro
             className="flex shrink-0 flex-col items-end overflow-x-hidden overflow-y-auto"
             style={{ width: TAB_WIDTH, gap: TAB_CHIP_GAP, padding: "6px 2px" }}
           >
-            {members.map((member, index) => {
-              const theme = themeColors(member.theme, resolved);
-              const isCurrent = member.id === shown.id;
-              const name = displayName(member);
-              const Icon = chipIconOf(member, isMasked(member, priv));
-              return (
-                <button
-                  key={member.id}
-                  ref={(node) => {
-                    tabRefs.current.set(member.id, node);
-                  }}
-                  type="button"
-                  role="tab"
-                  aria-selected={isCurrent}
-                  aria-label={`第 ${index + 1} 张，共 ${members.length} 张：${name}`}
-                  title={`${name}（点一下翻到这张；↑↓ 换张）`}
-                  tabIndex={isCurrent ? 0 : -1}
-                  onClick={() => onPick(member.id)}
-                  onKeyDown={onKeyDown}
-                  onPointerEnter={() => setPeekId(member.id)}
-                  onPointerLeave={() =>
-                    setPeekId((prev) => (prev === member.id ? null : prev))
-                  }
-                  onFocus={() => setPeekId(member.id)}
-                  onBlur={() => setPeekId((prev) => (prev === member.id ? null : prev))}
-                  className="flex shrink-0 cursor-pointer items-center justify-center border-0 transition-[width,filter] hover:brightness-110"
-                  style={{
-                    width: isCurrent ? TAB_CHIP + TAB_CHIP_PROTRUDE : TAB_CHIP,
-                    height: TAB_CHIP,
-                    borderRadius: CHIP_RADIUS,
-                    backgroundColor: isCurrent ? theme.accent : `${theme.accent}2E`,
-                    color: isCurrent ? theme.paper : theme.accent,
-                    boxShadow: isCurrent ? `0 2px 8px ${theme.accent}55` : "none",
-                  }}
-                >
-                  <Icon size={13} aria-hidden />
-                </button>
-              );
-            })}
+            {members.map((member, index) => (
+              <TabChip
+                key={member.id}
+                member={member}
+                resolved={resolved}
+                masked={isMasked(member, priv)}
+                isCurrent={member.id === shown.id}
+                index={index}
+                total={members.length}
+                onPick={onPick}
+                onKeyDown={onKeyDown}
+                onPeek={handlePeek}
+                onUnpeek={handleUnpeek}
+                registerRef={registerRef}
+              />
+            ))}
           </div>
           {peek !== null && (
             /* 名字浮在正文左下角，不塞进签列：列只管"有哪几张、在哪张" */

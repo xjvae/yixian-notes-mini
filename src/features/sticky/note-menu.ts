@@ -5,6 +5,11 @@
 // 危险项（删除便签、删掉这张图）一律排在各自那一段的最后，不让人闭着眼点到。
 
 import type { RowRef } from "@/features/sticky/row-target";
+// 动作契约住在 ui 层（ContextMenu 渲染它，这里只做"给哪几项"的判定）：
+// import 供本文件判定用，re-export 保持 note-content 等调用点的原路径不变
+import type { MenuAction } from "@/ui/menu-action";
+
+export type { MenuAction, MenuActionId } from "@/ui/menu-action";
 
 /** 右键落在什么上 */
 export type MenuHit =
@@ -45,31 +50,6 @@ export interface NoteState {
    * 时间轴是 `timeline[].text`，见 `data/note-types.ts` 的 `plainBody`），文案得跟着类型走——不然清单上写"复制正文"、复制出来是空串。
    */
   bodyLabel: string;
-}
-
-export type MenuActionId =
-  | "copy-selection"
-  | "cut-selection"
-  | "select-all"
-  | "add-link"
-  | "open-link"
-  | "copy-link"
-  | "copy-image"
-  | "delete-image"
-  | "add-image"
-  | "copy-body"
-  | "history"
-  | "toggle-private"
-  | "toggle-collapse"
-  | "delete-note"
-  | "separator";
-
-export interface MenuAction {
-  id: MenuActionId;
-  /** 分隔线没有文案 */
-  label: string;
-  /** 危险项：渲染成红字，且永远排在本段最后 */
-  danger?: boolean;
 }
 
 /** 通用尾巴。顺序即菜单里的顺序，删除便签在最后 */

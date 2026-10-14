@@ -1,6 +1,5 @@
-// 设置窗 — 外观（三档主题）/ 行为（开机启动、开机恢复、自动长高）/ 数据（立即备份）三节。
-// 改主题走 changeScheme（落库 + 广播，其它窗即时跟随）；
-// 开机启动读写注册表（autostart_*），开机恢复与备份直接读写 settings / data_backup 命令。
+// 设置窗：外观 / 行为 / 数据 / 组合 / 长按右键 / 快捷键各一节。
+// 设置项即时落库并广播；写失败一律回退到实际生效值，不留假勾假选中。
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -51,7 +50,7 @@ const SCHEME_OPTIONS: ReadonlyArray<{ value: SchemeSetting; label: string }> = [
   { value: "system", label: "跟随系统" },
 ];
 
-/** 默认分页：层叠卡片是新加的那一版，得留一条一眼退回原样子的路 */
+/** 叠窗呈现三档（默认分页） */
 const GROUP_VIEW_OPTIONS: ReadonlyArray<{
   value: GroupPresentation;
   label: string;
@@ -62,17 +61,17 @@ const GROUP_VIEW_OPTIONS: ReadonlyArray<{
   { value: "accordion", label: "手风琴", hint: "一列到底，点标题行就地展开" },
 ];
 
-/** 输完口令把这张标记成私密之后怎么办。三档，控件与上面那组一样 */
+/** 标记私密后的锁回档位 */
 const LOCK_AFTER_OPTIONS: ReadonlyArray<{ value: LockAfterMark; label: string }> = [
   { value: "never", label: "不锁" },
   { value: "ask", label: "每次问我" },
   { value: "now", label: "立即锁" },
 ];
 
-/** 「恢复」的两段确认与回收站那两条同一个节奏：第一击变确认键，3 秒不点自动退回 */
+/** 恢复两段确认：第一击变确认键，3 秒不点退回 */
 const RESTORE_RESET_MS = 3000;
 
-/** `20261012-094703[-2]` → `2026-10-12 09:47:03`（同秒避让的尾巴不显示，那是文件名的事） */
+/** `20261012-094703[-2]` → `2026-10-12 09:47:03` */
 function formatSnapshotLabel(label: string): string {
   const stamp = label.slice(0, 15);
   if (!/^\d{8}-\d{6}$/.test(stamp)) return label;
@@ -114,13 +113,13 @@ export function SettingsWindow() {
   const [autostartError, setAutostartError] = useState<string | null>(null);
   const [backupMessage, setBackupMessage] = useState<string | null>(null);
   const [backingUp, setBackingUp] = useState(false);
-  /** null = 还没读到（那一瞬所有档都不画选中，不猜一个给人看） */
+  /** null = 还没读到，暂不画选中 */
   const [autoLockMin, setAutoLockMin] = useState<number | null>(null);
-  /** 标记私密后的锁档：模块级状态已在 boot 读过库，这里只是订阅着画 */
+  /** 模块级状态已在 boot 读过库，这里订阅着画 */
   const lockAfter = useLockAfterMark();
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [snapshotError, setSnapshotError] = useState<string | null>(null);
-  /** 恢复成功要重读的那一批：这一窗是"关=藏起来"的，不重载就停在恢复前的读数上 */
+  /** 恢复成功后靠它重读库内档位（本窗关闭只是隐藏） */
   const [reloadSeq, setReloadSeq] = useState(0);
   const [armedRestore, setArmedRestore] = useState<string | null>(null);
   const [restoring, setRestoring] = useState(false);
@@ -158,8 +157,7 @@ export function SettingsWindow() {
   }, [reloadSeq]);
 
   useEffect(() => {
-    // 开机启动的事实来源是注册表，不是库：开窗读一次，托盘那边改了会广播，这里跟着重读。
-    // 读失败按"没开"显示——这条默认就是关的，一次读失败不许把勾画到"开着"那一边。
+    // 开机启动的事实来源是注册表：开窗读一次，托盘改动靠广播同步；读失败按未开启显示
     let off: (() => void) | null = null;
     let cancelled = false;
     void autostartGet()
@@ -190,8 +188,7 @@ export function SettingsWindow() {
   const handleAutostartToggle = useCallback((checked: boolean) => {
     setAutostartOn(checked);
     setAutostartError(null);
-    // 回显的是**实际生效值**：写不进去（注册表被安全软件拦）就退回原样并把原因说出来，
-    // 不能留一个"看着勾上了、下次开机却没启动"的假勾
+    // 回显实际生效值：写失败退回并报错，不留假勾
     void autostartSet(checked)
       .then((actual) => setAutostartOn(actual))
       .catch((error: unknown) => {
@@ -211,8 +208,7 @@ export function SettingsWindow() {
     (minutes: number) => {
       const prev = autoLockMin;
       setAutoLockMin(minutes);
-      // 落库失败就退回原档：这一档的真相在库里（Rust 那条循环直接读它），
-      // 界面上留一个"看着改了、其实没改"的假选中比退回原样更糟
+      // 落库失败退回原档（真相在库里，不留假选中）
       void settingsSet(AUTO_LOCK_KEY, String(minutes)).catch((error: unknown) => {
         logger.caught("settings", "自动上锁档位落库失败，退回原档", error);
         setAutoLockMin(prev ?? AUTO_LOCK_DEFAULT_MIN);
@@ -227,13 +223,13 @@ export function SettingsWindow() {
     void dataBackup()
       .then((path) => {
         setBackupMessage(`已备份到 ${path}`);
-        setReloadSeq((seq) => seq + 1); // 刚打的那一份要立刻出现在下面那份清单里
+        setReloadSeq((seq) => seq + 1); // 新备份立刻进清单
       })
       .catch((error: unknown) => setBackupMessage(`备份失败：${String(error)}`))
       .finally(() => setBackingUp(false));
   }, [backingUp]);
 
-  /** 两段确认：第一击只把这一行变成"确认恢复"，3 秒不点自动退回（与回收站同一条节奏） */
+  /** 两段确认：第一击变确认键，3 秒不点退回 */
   const handleSnapshotRestore = useCallback(
     (label: string) => {
       if (armedRestore !== label) {
@@ -256,7 +252,7 @@ export function SettingsWindow() {
               report.warning ?? "",
             ].join(" "),
           );
-          // 整库都换了：这一窗自己那些从库里读的档位必须重读，不然显示的是上一个库的
+          // 整库已换：重读本窗从库里读的档位
           setReloadSeq((seq) => seq + 1);
         })
         .catch((error: unknown) => setRestoreMessage(`恢复失败：${String(error)}`))
@@ -303,7 +299,7 @@ export function SettingsWindow() {
             })}
           </div>
           <p className="mt-1.5 text-[11px] text-[var(--panel-muted)]">
-            深色档对便签纸面与全部面板生效；「跟随系统」随 Windows 的深浅色即时切换。
+            深色对便签纸面与面板都生效；「跟随系统」随 Windows 即时切换。
           </p>
         </Section>
 
@@ -318,9 +314,8 @@ export function SettingsWindow() {
             开机启动（登录后自动运行本应用）
           </label>
           <p className="mt-1.5 text-[11px] text-[var(--panel-muted)]">
-            默认不开。勾上登记的是**当前这个 exe
-            的完整路径**——程序挪过位置就要取消再重新勾一次；
-            托盘菜单里那一条勾与这里是同一个状态，两边改哪边都同步。
+            默认不开。登记的是当前 exe
+            的完整路径，程序挪位置后要重新勾一次；与托盘里的开关同步。
           </p>
           {autostartError !== null && (
             <p role="alert" className="mt-1 break-all text-[11px] text-red-700">
@@ -337,7 +332,7 @@ export function SettingsWindow() {
             开机自动恢复桌面上的便签
           </label>
           <p className="mt-1.5 text-[11px] text-[var(--panel-muted)]">
-            关闭后，下次启动只显示托盘，便签要在托盘里手动唤起（星环落地后）。
+            关闭后，下次启动只显示托盘。
           </p>
           <label className="mt-2 flex cursor-pointer items-center gap-2 text-xs text-[var(--panel-ink)]">
             <input
@@ -348,9 +343,8 @@ export function SettingsWindow() {
             便签随内容自动长高（有图时宽按图对齐）
           </label>
           <p className="mt-1.5 text-[11px] text-[var(--panel-muted)]">
-            开着时写的字把窗顶高、删了缩回来，上限 900 像素，多出来的正文自己滚。
-            这是**默认值**：手拉某一扇窗的边就把那一张退回固定尺寸，
-            每张便签页脚那个按钮还能单独翻（跟随全局 / 强制自动 / 强制固定三档）。
+            写字顶高窗、删字缩回来，上限 900 像素。这是全局默认值；
+            手动拉过边的那张退回固定尺寸，页脚按钮可按张单独翻。
           </p>
           <p className="mt-2 text-xs text-[var(--panel-ink)]">
             私密便签：揭开的那几张，便签窗内多久没操作就蒙回
@@ -384,10 +378,7 @@ export function SettingsWindow() {
             })}
           </div>
           <p className="mt-1.5 text-[11px] text-[var(--panel-muted)]">
-            只认便签窗里的点击、按键与滚轮——在设置窗或搜索窗里打字不算续期。到点那一发
-            与托盘那条「立即锁定私密便签」是同一条路：**把揭开的那几张一起蒙回**，每张的钥匙
-            只从内存清掉，盘上的封套与密文原样，回到那张便签上重输口令就回来。
-            逐张模型里没有"只蒙回其中几张"这种半动作。改档即时生效，不用重启。
+            只认便签窗内的操作续期；到点把揭开的那几张一起蒙回，重输口令即回。改档即时生效。
           </p>
           <p className="mt-2 text-xs text-[var(--panel-ink)]">
             输完口令把一张便签标记成私密之后
@@ -420,16 +411,12 @@ export function SettingsWindow() {
             })}
           </div>
           <p className="mt-1.5 text-[11px] text-[var(--panel-muted)]">
-            只管"这张还没揭开、点标记私密于是弹口令窗"那一条路：输完口令这张自动补上标记，
-            然后按这里的选择蒙回去、不蒙、还是当场问一句（问的话是页脚那颗锁钮变 5
-            秒的确认态， 点它才锁）。这一张已经开着时点标记不会问——那一下你没输过密码。
-            删私密便签那道口令门补完之后也不问，蒙回去只会挡住你确认刚删了什么。
+            只对"输完口令自动补上标记"那一条路生效；这张已揭开时点标记不会再问。
           </p>
           <button
             type="button"
             onClick={() => {
-              // 失败只记一行：这一窗里点这颗钮没反应，比弹个错更容易被当成"没做出来"，
-              // 所以现场要留得下来
+              // 失败只记日志：这颗钮"没反应"比弹错更糟，现场要留得住
               void openGuideWindow().catch((error: unknown) =>
                 logger.caught("settings", "打开引导教程失败", error),
               );
@@ -439,9 +426,6 @@ export function SettingsWindow() {
           >
             重看引导教程
           </button>
-          <p className="mt-1.5 text-[11px] text-[var(--panel-muted)]">
-            十二步，一步一停，从长按右键到私密层与备份。首次启动会自动演一次，看过之后只剩这颗钮。
-          </p>
         </Section>
 
         <Section icon={<Database size={14} aria-hidden />} title="数据">
@@ -463,9 +447,8 @@ export function SettingsWindow() {
             </p>
           )}
           <p className="mt-1.5 text-[11px] text-[var(--panel-muted)]">
-            一份快照 = 整个库（<code>VACUUM INTO</code> 的干净副本，含 WAL）+
-            同名的私密封套 副本，存放在数据目录的 backups\ 下，可用任意 SQLite
-            工具打开。只留最新 10 份。
+            一份快照 = 整库副本 + 私密封套副本，存在数据目录的 backups\ 下，只留最新 10
+            份。
           </p>
           {snapshotError !== null && (
             <p role="alert" className="mt-1.5 break-all text-[11px] text-red-700">
@@ -508,20 +491,13 @@ export function SettingsWindow() {
             </ul>
           )}
           {snapshots.length === 0 && snapshotError === null && (
-            <p className="mt-2 text-[11px] text-[var(--panel-muted)]">
-              还没有快照。点上面那颗钮就有了。
-            </p>
+            <p className="mt-2 text-[11px] text-[var(--panel-muted)]">还没有快照。</p>
           )}
           {restoreMessage !== null && (
             <p role="status" className="mt-1.5 text-[11px] text-[var(--panel-ink)]">
               {restoreMessage}
             </p>
           )}
-          <p className="mt-1.5 text-[11px] text-[var(--panel-muted)]">
-            恢复是整库换回那一刻：现在的数据不会丢，它会先被自动存成一份新快照。
-            换完揭开的那几张会**当场蒙回**（内存里那些钥匙对应的是换掉之前的封套），
-            回到那张便签上重输口令即可。所有开着的便签窗会自己重读。
-          </p>
         </Section>
 
         <Section icon={<Layers size={14} aria-hidden />} title="组合（叠窗）">
@@ -552,7 +528,7 @@ export function SettingsWindow() {
               );
             })}
           </div>
-          {/* 说明按档位列出来自同一张选项表：加了档忘了写说明，这里就会少一条 */}
+          {/* 说明与档位同一张选项表，加档不会漏 */}
           <ul className="mt-2 space-y-0.5">
             {GROUP_VIEW_OPTIONS.map((option) => (
               <li
@@ -571,8 +547,7 @@ export function SettingsWindow() {
             ))}
           </ul>
           <p className="mt-1.5 text-[11px] text-[var(--panel-muted)]">
-            三档共用同一份成员序与同一张"当前在看哪一张"，切档不动任何数据；
-            已开的叠窗立刻跟着换，不用重开。
+            切档不动任何数据，已开的叠窗立刻跟随。
           </p>
         </Section>
 

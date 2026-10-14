@@ -103,9 +103,10 @@ pub fn refresh(app: &tauri::AppHandle) {
     };
     let mut list: Vec<Screen> = monitors.iter().map(screen_of).collect();
     list.sort_by_key(|s| i64::from(s.left != 0) + i64::from(s.top != 0));
-    if let Ok(mut guard) = SCREENS.write() {
-        *guard = list;
-    }
+    let mut guard = SCREENS
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *guard = list;
 }
 
 /// 按下点真正落在的那块屏；命不中给 `None`。

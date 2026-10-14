@@ -24,14 +24,10 @@ import { flushNow, refreshStore, hydrateStore, initStore } from "@/store/notes-s
 import "@/index.css";
 
 /**
- * 整棵树提交到 DOM 之后喊一声"可以亮了"。
- *
- * 便签窗是**建的时候隐藏**的（`windows/factory.rs` 的 `reveal_timeout_ms`）：透明窗一出生
- * 就显示的话，先亮的是 WebView2 那块默认白，要等 hydrate + 首帧画完才出便签——作者报的
- * "打开软件时白屏一阵"。挂在这层而不是 `mount()` 里，是因为 `createRoot().render()`
- * 的初次提交是异步的：在 mount() 后面直接喊会在画面还是空的时候就把窗亮出来。
- * StrictMode 下 effect 跑两遍也没事（reveal 就是 show + focus，幂等）。
- * 喊失败（或整棵树崩在这儿之前）也不会看不见便签：那边 2s 到点自己 show。
+ * 整棵树提交到 DOM 之后喊一声"可以亮了"。便签窗建的时候是隐藏的：透明窗一出生就 show，
+ * 先亮的是 WebView2 默认白（"打开软件白屏一阵"），必须等 hydrate + 首帧画完。挂在这层而不是
+ * mount() 里：createRoot().render() 的初次提交是异步的。幂等，StrictMode 跑两遍没事；
+ * 喊失败也有兜底（那边 2s 到点自己 show）。
  */
 function RevealWhenCommitted({ focus }: { focus: boolean }): null {
   useEffect(() => {
@@ -60,12 +56,13 @@ export interface BootOptions {
 
 function renderFatal(label: string, error: unknown): void {
   const root = document.getElementById("root");
-  if (root) {
-    root.innerHTML = `
-      <div style="display:flex;height:100vh;align-items:center;justify-content:center;background:#FEF2F2;color:#B91C1C;font-size:13px;padding:24px;text-align:center">
-        ${label}启动失败：${describeError(error)}
-      </div>`;
-  }
+  if (!root) return;
+  const box = document.createElement("div");
+  box.style.cssText =
+    "display:flex;height:100vh;align-items:center;justify-content:center;background:#FEF2F2;color:#B91C1C;font-size:13px;padding:24px;text-align:center";
+  // textContent 而不是 innerHTML：error 消息是动态串，拼进 innerHTML 就是全库唯一一处注入面
+  box.textContent = `${label}启动失败：${describeError(error)}`;
+  root.replaceChildren(box);
 }
 
 export async function boot({

@@ -1,5 +1,4 @@
-// ErrorBoundary — 每个入口都挂在最外层。渲染期崩溃给一句可读的话 + 保留现场
-// （错误摘要），绝不让用户面对一块白屏。
+// ErrorBoundary — 每个入口最外层：渲染崩溃给一句可读提示，不白屏。
 
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { logger } from "@/platform/logger";

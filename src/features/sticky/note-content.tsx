@@ -26,7 +26,6 @@ import {
 import { TYPE_ICONS } from "@/features/sticky/note-icons";
 import { IconPicker } from "@/features/sticky/icon-picker";
 import { BodyView } from "@/features/sticky/body-view";
-import { forgetMedia } from "@/features/sticky/use-media";
 import { ContextMenu } from "@/ui/context-menu";
 import { HistoryPanel } from "@/features/sticky/history-panel";
 import { LinkPrompt } from "@/ui/link-prompt";
@@ -35,7 +34,7 @@ import { selectionRange } from "@/features/sticky/selection-range";
 import type { SelectionRange } from "@/features/sticky/selection-range";
 import { parseBodySpans, wrapLink } from "@/data/body-parse";
 import type { RowRef } from "@/features/sticky/row-target";
-import { patchRowText, rowRefFrom, rowRoom, rowText } from "@/features/sticky/row-target";
+import { patchRowText, rowRefFrom, rowText } from "@/features/sticky/row-target";
 import type { MenuAction, MenuActionId, MenuHit } from "@/features/sticky/note-menu";
 import { openExternal } from "@/platform/open-link";
 import { useAutoSizeDefault } from "@/data/auto-size-default";
@@ -50,19 +49,17 @@ import {
 } from "@/data/note-types";
 import { describeDue } from "@/data/due";
 import { BODY_MAX, ITEM_MAX, TAG_MAX, TITLE_MAX, shouldShowCount } from "@/data/limit";
-import { withoutMediaRef } from "@/data/body-parse";
 import { isAcceptedMime } from "@/data/image-input";
 import { normalizeTagInput, tagInk } from "@/data/tags";
 import { useNow } from "@/features/sticky/use-now";
-import { useNoteImageAttacher } from "@/features/sticky/use-note-image";
+import { useImageAttach } from "@/features/sticky/use-image-attach";
 import { TodoBody } from "@/features/sticky/todo-body";
 import { TimelineBody } from "@/features/sticky/timeline-body";
 import { ReminderFields } from "@/features/sticky/reminder-fields";
 import { isMasked, usePrivateState } from "@/data/private-state";
 import { useWriteFailures } from "@/store/hooks";
-import { flushNow, getNote, updateNote } from "@/store/notes-store";
+import { flushNow, updateNote } from "@/store/notes-store";
 import {
-  mediaDelete,
   mediaGet,
   mediaSetPrivate,
   openUnlockWindow,
@@ -77,6 +74,8 @@ import type { StickyContentType, StickyNote } from "@/platform/contracts";
 const SCOPE = "sticky";
 /** 「要不要立即锁回去」那 5 秒。比回收站/恢复那两处两段确认（3 秒）长一点：那是确认删除，这是顺手一问 */
 const LOCK_CONFIRM_MS = 5000;
+/** 提示条（flash）自动消失的时长：长到读得完一句话，短到不挡下一波操作 */
+const FLASH_MS = 1800;
 
 export interface NoteContentProps {
   id: string;
@@ -123,99 +122,23 @@ export function NoteContent({
   const [bodyMessage, setBodyMessage] = useState<string | null>(null);
   const bodyRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
-  /** 压图与存库那一段只有一个口：清单条目、时间轴条目走的是同一个（use-note-image） */
-  const images = useNoteImageAttacher(id);
+  /**
+   * 贴图三条路（正文插入 / 条目追加 / 按引用删）整簇在 use-image-attach：
+   * "预算 → 放不下回滚" 原来在 attachToBody 与 attachToRow 各抄一份，收拢成一份了。
+   */
 
   // 进编辑态就把手放到 textarea 上：不聚焦的话"点正文开始写"要点两下
   useEffect(() => {
     if (editingBody) bodyRef.current?.focus();
   }, [editingBody]);
 
-  /** 内存里此刻那一份（不是渲染闭包里的 `note`）：跨过 await 后还要改这张时用它——await 期间
-   *  人还在打字、updateNote 每下换新对象，闭包里那份已成旧快照。 */
-  const liveNote = (): StickyNote | null => getNote(id);
-  const liveBody = (): string => getNote(id)?.body ?? note.body;
-
-  /** 存好之后把引用插进正文的光标处（不在编辑态就插到末尾） */
-  const attachToBody = async (files: File[]): Promise<void> => {
-    const { refs, ids } = await images.attach(files, {
-      room: BODY_MAX - liveBody().length,
-      isPrivate: note.private,
-    });
-    if (refs.length === 0) return;
-    // 这一串 await 期间人还在打字、每下换掉内存里那份——光标与正文都必须从**落定那一刻**重算，
-    // 拿闭包旧值拼回去会把这几百毫秒打的字整个吃掉
-    const body = liveBody();
-    const caret = Math.min(
-      editingBody ? (bodyRef.current?.selectionStart ?? body.length) : body.length,
-      body.length,
-    );
-    const block = refs.join("\n");
-    const head = body.slice(0, caret);
-    const tail = body.slice(caret);
-    const joined =
-      head +
-      (head === "" || head.endsWith("\n") ? "" : "\n") +
-      block +
-      (tail === "" ? "\n" : tail.startsWith("\n") ? "" : "\n") +
-      tail;
-    if (joined.length > BODY_MAX) {
-      // 预算没拦住也不能 slice 截断——截一半把 `![…](media://m…)` 切成认不出的残句，图永远显不出；宁可回滚刚存的、回一句"放不下"
-      for (const mediaId of ids) {
-        void mediaDelete(mediaId).catch((error: unknown) =>
-          logger.caught(SCOPE, "回滚刚存的图失败（正文放不下）", error),
-        );
-      }
-      setBodyMessage(`正文放不下这些图片引用（还差 ${joined.length - BODY_MAX} 个字）`);
-      return;
-    }
-    updateNote(id, { body: joined });
-  };
-
-  /** 阅读态"删掉这张图"：库里字节与引用一起走。给了 `row` 就摘那一条的文本（同一引用正文/条目
-   *  都可能出现，须按目标摘、别按正文一把梭）。 */
-  const dropImage = (mediaId: string, row: RowRef | null = null): void => {
-    const target = row === null ? note.body : rowText(note, row);
-    if (target === null) return;
-    const patch =
-      row === null
-        ? { body: withoutMediaRef(target, mediaId) }
-        : patchRowText(note, row, withoutMediaRef(target, mediaId));
-    if (patch === null) return;
-    updateNote(id, patch);
-    forgetMedia(mediaId);
-    void mediaDelete(mediaId).catch((error: unknown) =>
-      logger.caught(SCOPE, "删图库里的字节失败（引用已摘）", error),
-    );
-  };
-
-  /** 把图存好追加到某条末尾——与清单/时间轴粘图同口径（room 先算、放不下回滚、空条不垫换行）。 */
-  const attachToRow = async (row: RowRef, files: File[]): Promise<void> => {
-    const before = rowText(liveNote() ?? note, row);
-    if (before === null) return;
-    const { refs, ids } = await images.attach(files, {
-      room: rowRoom(before),
-      isPrivate: note.private,
-    });
-    if (refs.length === 0) return;
-    // 同 `attachToBody`：这一串 await 期间那一条可能又被改过，追加的对象必须是当下那一份
-    const current = rowText(liveNote() ?? note, row);
-    if (current === null) return;
-    const block = refs.join("\n");
-    const next = current === "" ? block : `${current}\n${block}`;
-    if (next.length > ITEM_MAX) {
-      for (const mediaId of ids) {
-        void mediaDelete(mediaId).catch((error: unknown) =>
-          logger.caught(SCOPE, "回滚刚存的图失败（这条放不下）", error),
-        );
-      }
-      setBodyMessage(`这条放不下这些图片引用（还差 ${next.length - ITEM_MAX} 个字）`);
-      return;
-    }
-    const patch = patchRowText(liveNote() ?? note, row, next);
-    if (patch === null) return;
-    updateNote(id, patch);
-  };
+  const { attachToBody, attachToRow, dropImage, images } = useImageAttach({
+    id,
+    note,
+    editingBody,
+    bodyRef,
+    onMessage: setBodyMessage,
+  });
 
   /** 走过口令窗标记成私密后"要不要立刻锁回去"的 5 秒确认态。只在真输过口令那条路亮起：
    *  已解锁时点标记的人没输密码，不该被问。 */
@@ -330,7 +253,7 @@ export function NoteContent({
 
   useEffect(() => {
     if (flash === null) return;
-    const timer = setTimeout(() => setFlash(null), 1800);
+    const timer = setTimeout(() => setFlash(null), FLASH_MS);
     return () => clearTimeout(timer);
   }, [flash]);
 
@@ -690,7 +613,7 @@ export function NoteContent({
           <button
             type="button"
             aria-label="删除便签"
-            title="删除（可在回收站恢复）"
+            title="删除便签"
             onClick={onDelete}
             className="rounded p-1 transition-colors hover:bg-black/10"
             style={{ color: theme.accent }}
@@ -946,8 +869,8 @@ export function NoteContent({
           {/* 加图。走 webview 自己的文件框，不需要 fs/dialog 插件：拿到的就是 File 对象，字节随后由 media_save 落库 */}
           <button
             type="button"
-            aria-label="加一张图（也可以直接粘贴或拖进来）"
-            title="加一张图（也可以直接粘贴或拖进来）"
+            aria-label="加一张图"
+            title="加一张图"
             onClick={() => fileRef.current?.click()}
             className="rounded p-1 transition-colors hover:bg-black/10"
             style={{ color: theme.accent }}
@@ -974,7 +897,7 @@ export function NoteContent({
           <button
             type="button"
             aria-label={autoLabel}
-            title={`${autoLabel}（点一下切下一档：跟随全局 → 强制开着 → 强制固定）`}
+            title={autoLabel}
             onClick={() => updateNote(id, { autoSize: autoNext })}
             className="rounded p-1 transition-colors hover:bg-black/10"
             style={{ color: theme.accent, opacity: note.autoSize === null ? 0.45 : 1 }}
@@ -990,7 +913,7 @@ export function NoteContent({
           <button
             type="button"
             aria-label="历史版本"
-            title="历史版本（回到之前某一版）"
+            title="历史版本"
             onClick={() => setHistoryOpen(true)}
             className="rounded p-1 transition-colors hover:bg-black/10"
             style={{ color: theme.accent }}
@@ -1009,11 +932,7 @@ export function NoteContent({
               <button
                 type="button"
                 aria-label="立即锁定"
-                title={
-                  lockConfirm
-                    ? "点一下就把揭开的那几张一起蒙回（5 秒内不点就保持开着）"
-                    : "立即锁定：把揭开的那几张一起蒙回"
-                }
+                title={lockConfirm ? "确认锁定" : "立即锁定"}
                 onClick={() => {
                   if (lockConfirmTimer.current !== null)
                     clearTimeout(lockConfirmTimer.current);
@@ -1052,7 +971,7 @@ export function NoteContent({
           <button
             type="button"
             aria-label="删除便签"
-            title="删除（可在回收站恢复）"
+            title="删除便签"
             onClick={onDelete}
             className="rounded p-1 transition-colors hover:bg-black/10"
             style={{ color: theme.accent }}

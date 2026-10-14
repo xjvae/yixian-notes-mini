@@ -194,7 +194,10 @@ export function RingMenu() {
       unDismiss = await listen("ring:dismiss", () => {
         void closeMenu();
       });
-    })().catch(() => {});
+    })().catch((error: unknown) =>
+      // 装配失败不吞：四条 listen 任一 reject，星环就收不到全部事件，必须留痕
+      logger.caught("ring", "星环事件订阅装配失败，事件链可能失效", error),
+    );
     return () => {
       cancelled = true;
       unCharge?.();

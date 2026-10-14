@@ -17,6 +17,7 @@ use crate::db::query::{media, private_note, sticky};
 use crate::support::{clock, log};
 use crate::support::error::{AppError, AppResult};
 use crate::support::id;
+use zeroize::Zeroizing;
 
 use super::run_db;
 
@@ -164,11 +165,11 @@ pub async fn media_get(
             let key = private_note::image_key(&vault, &row.note_id)?;
             crypto::open_blob(&key, &private::media_aad(&row.id), &row.bytes)?
         } else {
-            row.bytes
+            Zeroizing::new(row.bytes)
         };
         Ok(Some(MediaBytes {
             mime: row.mime,
-            data_base64: B64.encode(bytes),
+            data_base64: B64.encode(&*bytes),
         }))
     })
     .await
@@ -206,7 +207,8 @@ pub async fn media_set_private(
         let mut changed = 0usize;
         for row in media::list_for_note_conn(&tx, &note_id)? {
             let next = match (private, row.enc) {
-                (true, false) => Some((crypto::seal_blob(&key, &private::media_aad(&row.id), &row.bytes)?, true)),
+                // 两条臂统一 Zeroizing：解出的明文走 open_blob 自带的擦除，密封的密文包一层无妨
+                (true, false) => Some((Zeroizing::new(crypto::seal_blob(&key, &private::media_aad(&row.id), &row.bytes)?), true)),
                 (false, true) => Some((crypto::open_blob(&key, &private::media_aad(&row.id), &row.bytes)?, false)),
                 // 已经是要的形状：不重写（重写一次就多一次 nonce，也白读一次密钥）
                 _ => None,

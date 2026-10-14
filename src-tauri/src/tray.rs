@@ -62,8 +62,14 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
     // 设置窗改完开关要刷这一项的勾：菜单只在这里建一次，句柄不存下来就再也够不着它
     app.manage(crate::autostart::TrayToggle(autostart_i.clone()));
 
-    TrayIconBuilder::with_id("main-tray")
-        .icon(app.default_window_icon().expect("打包图标缺失").clone())
+    // 图标读不到**不崩**：panic=abort 下 expect 是启动崩点，而托盘是用户唯一的退出路——
+    // 宁可无图标空着，菜单与动作照常可用
+    let mut builder = TrayIconBuilder::with_id("main-tray");
+    match app.default_window_icon() {
+        Some(icon) => builder = builder.icon(icon.clone()),
+        None => crate::support::log::warn("tray", "打包图标缺失，托盘无图标（菜单照常可用）"),
+    }
+    builder
         .tooltip(TRAY_TOOLTIP)
         .menu(&menu)
         .show_menu_on_left_click(true)

@@ -1,0 +1,6 @@
+{
+  "identifier": "chromeless-windows",
+  "description": "星环与提醒卡：纯事件监听 + 自绘，不碰任何窗口操纵 API，只给 core:default（事件/应用信息）",
+  "windows": ["ring", "reminder-card"],
+  "permissions": ["core:default"]
+}

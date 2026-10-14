@@ -1,17 +1,9 @@
-// import — 旧版应用（com.yixian.notes.mini）mini.db 的一次性导入。
-//
-// 三条纪律：
-//  1. **幂等**：标记写在 settings 表（legacy_import_done_v1），与数据同一个事务——
-//     导入成功但标记没写成 = 回滚重来，绝不会导入两份；
-//  2. **只读旧库**：旧库以只读方式打开，旧应用的文件一个字节都不动（两边共存期间
-//     用户随时可以回旧版）；
-//  3. **摊回桌面**：旧库 floating=0 的未删便签是"只在墙上"的存量，新版没有墙——
-//     导入时统一 floating=1、collapsed=0，否则它们永远不可达。
-//
-// 列映射（旧 → 新）：text→title、color→theme、w/h→width/height、always_on_top→pinned、
-// remind_repeat→repeat；items_json（"[x] 文本" 字符串数组）+ item_ids_json 合成
-// {id,text,done} 对象数组；timeline_json 去掉 exact 位。丢弃不迁移：monitor/sort/
-// opacity/locked/pin_mode/pinned（新版没有对应能力）。
+// import — 旧版应用（com.yixian.notes.mini）mini.db 的一次性导入。三条纪律：
+// 幂等（标记 legacy_import_done_v1 与数据同一事务，成功但标记没写 = 回滚重来）；
+// 只读旧库（旧应用文件一个字节不动，两边共存期随时可回旧版）；
+// 摊回桌面（旧库 floating=0 的未删便签统一 floating=1、collapsed=0，否则永远不可达）。
+// 列映射：text→title、color→theme、w/h→width/height、always_on_top→pinned、remind_repeat→repeat；
+// items_json+item_ids_json 合成 {id,text,done}；timeline_json 去 exact 位。丢弃不迁移：monitor/sort/opacity/locked/pin_mode/pinned。
 
 use std::path::{Path, PathBuf};
 

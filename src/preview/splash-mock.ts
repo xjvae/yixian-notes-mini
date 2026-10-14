@@ -1,16 +1,8 @@
-// 开场动画的**预览台复刻** — 看的是时长、形状、配色，不是真机那身像素。
-//
-// 真机那份在 `src-tauri/src/splash.rs`：原生分层窗 + `CreateDIBSection` 逐像素写预乘 BGRA
-// + `UpdateLayeredWindow` 提交。浏览器里放不进去，所以这里用 SVG 的 `stroke-dashoffset`
-// 复现同一条弧。两份的参数靠下面这张表对起来，**改一边要同时改另一边**
-// （与 `windows/ring.rs` 的 RING_SIZE=360 那三处同一个做法）。
-//
-// 这条复刻验不出来的东西，别把它当已验：
-//  · 分层窗的 alpha 边与超采样覆盖率（真机的边是 `band_coverage` 手抹的 1 像素）；
-//  · DPI 换算后环带的实际粗细（这里恒按 100% 画）；
-//  · 颜色的判据不同：真机读 HKCU 的 `AppsUseLightTheme`，这里退到 `prefers-color-scheme`；
-//  · **退场那一刻的真实时序**：真机是"第一扇窗 reveal 才收"，而预览台里那一下是秒出的，
-//    所以这里不自动演，交给工具条那颗钮——要看满 600ms 那条弧就按它。
+// 开场动画的预览台复刻 — 看的是时长/形状/配色，不是真机像素。真机那份在 `src-tauri/src/splash.rs`
+// （原生分层窗逐像素写 BGRA），浏览器放不进去，这里用 SVG stroke-dashoffset 复现同一条弧。
+// 参数靠下面这张表对起来，改一边要同时改另一边。这条复刻验不出来的：分层窗 alpha 边、DPI 换算后
+// 环带粗细、真机读 HKCU 的深浅色（这里退到 prefers-color-scheme）、真机"第一扇窗 reveal 才收"的退场时序
+// （预览台秒出，所以不自动演，交给工具条那颗钮）。
 
 /** 与 `splash.rs` 同值的参数表（逻辑像素 / 毫秒）。改这里不改那边 = 分叉 */
 export const SPLASH_MOCK = {

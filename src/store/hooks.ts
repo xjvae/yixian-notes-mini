@@ -6,12 +6,15 @@ import type { StickyNote } from "@/platform/contracts";
 import {
   getFailedSnapshot,
   getHydrationError,
+  getMembersSnapshot,
   getNote,
   getNotesSnapshot,
   getTitlesSnapshot,
   isStoreReady,
   subscribe,
 } from "@/store/notes-store";
+
+const EMPTY_NOTES: readonly StickyNote[] = [];
 
 /** 单便签订阅。id 为 null 或实体不存在时返回 null */
 export function useNote(id: string | null): StickyNote | null {
@@ -21,6 +24,14 @@ export function useNote(id: string | null): StickyNote | null {
 /** 全量列表订阅（回收站与搜索都用它，叠窗的成员也从这里算） */
 export function useNotes(): readonly StickyNote[] {
   return useSyncExternalStore(subscribe, getNotesSnapshot);
+}
+
+/** 某一叠的成员订阅。引用只在"这一叠的成员或内容"变化时才换——
+ *  别的叠里敲一个字不再带着整扇叠窗重渲（全量 useNotes() 会） */
+export function useGroupMembers(groupId: string | null): readonly StickyNote[] {
+  return useSyncExternalStore(subscribe, () =>
+    groupId === null ? EMPTY_NOTES : getMembersSnapshot(groupId),
+  );
 }
 
 /** 只要 "id → 标题" 那一份（引用稳定性由 store 那一格保证：改正文不换引用）。

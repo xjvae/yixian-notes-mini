@@ -1,0 +1,11 @@
+{
+  "identifier": "guide-window",
+  "description": "引导窗：无 WindowChrome（不拖动），但气泡要自己摆位——setWindowFrame + 读缩放系数",
+  "windows": ["guide"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-size",
+    "core:window:allow-set-position",
+    "core:window:allow-scale-factor"
+  ]
+}

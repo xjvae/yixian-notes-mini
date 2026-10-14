@@ -1,0 +1,39 @@
+# 六道门禁上云：typecheck → vitest → eslint → prettier → cargo test → clippy
+# 与本地 `npm run verify` 完全同源；只在 windows-latest 跑（windows crate 仅 Windows 可编译）。
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      # rustup 是 runner 预装的；只做增量缓存（bundled SQLite 首编很重）
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~\.cargo\registry
+            ~\.cargo\git
+            src-tauri\target
+          key: verify-win-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: verify-win-
+
+      - name: npm ci
+        run: npm ci
+
+      - name: verify（typecheck + test + lint + format + cargo test + clippy）
+        run: npm run verify

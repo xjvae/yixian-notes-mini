@@ -1,0 +1,6 @@
+{
+  "identifier": "panel-windows",
+  "description": "四扇面板窗（search/trash/settings/unlock）：共用 WindowChrome 拖动条，除事件外只需 start-dragging——尺寸与位置由 Rust 开窗时定死，前端不再改",
+  "windows": ["search", "trash", "settings", "unlock"],
+  "permissions": ["core:default", "core:window:allow-start-dragging"]
+}

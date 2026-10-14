@@ -38,17 +38,10 @@ pub struct WindowSpec {
     pub focused: bool,
     /// 创建即显示？（星环走 false：先建好/摆好位再由 open 路径显式 show）
     pub visible: bool,
-    /// 给了 = 这扇窗**建的时候不显示**，等前端把内容画完自己喊 `float_reveal` 亮出来。
-    /// 到点还没等到就强行 show。
-    ///
-    /// **为什么要有这条**：便签窗是透明窗，而 Tauri 只在 `background_color` **显式给了**
-    /// 的时候才往下传（tauri-runtime-wry 里是 `if let Some(color) = ...`），没给就吃
-    /// WebView2 的默认白；于是开机恢复那阵子先亮一块白屏，等 hydrate + 首帧画完才出便签
-    /// （作者报的"打开软件时白屏一阵"）。走"先隐后 show"就不会出现任何颜色的闪，
-    /// 星环早就是这条路（`ring.rs` 建隐窗再 show）。
-    ///
-    /// **为什么必须有兜底**：前端要是崩了/卡了没来喊，便签就永远不出现——
-    /// "看不见我的便签"比"闪一下白"严重得多，所以到点无条件 show。
+    /// 给了 = 这扇窗**建的时候不显示**，等前端画完喊 `float_reveal` 亮出，到点没等到就强行 show。
+    /// 必须先隐后 show：便签窗是透明窗，Tauri 只在 `background_color` 显式给了才往下传，没给就吃
+    /// WebView2 默认白（"打开软件白屏一阵"）。必须有兜底：前端崩了没来喊，便签就永远不出现——
+    /// "看不见便签"比"闪一下白"严重得多。
     pub reveal_timeout_ms: Option<u64>,
     /// 复用已有窗时是否 show + focus（星环走 false：先摆位再显式 show，避免闪在旧位）
     pub show_on_reuse: bool,

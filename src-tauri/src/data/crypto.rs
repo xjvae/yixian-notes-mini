@@ -141,12 +141,13 @@ fn seal_raw(key: &[u8], aad: &[u8], plaintext: &[u8]) -> Result<(Vec<u8>, Vec<u8
     Ok((nonce, ciphertext))
 }
 
+/// 解出的明文用 Zeroizing 包裹：丢弃即擦除，明文不在堆上自然释放留痕。
 pub fn open(
     key: &[u8],
     aad: &[u8],
     nonce: &str,
     ciphertext: &str,
-) -> Result<Vec<u8>, AppError> {
+) -> Result<Zeroizing<Vec<u8>>, AppError> {
     let nonce_bytes = B64.decode(nonce)
         .map_err(|_| AppError::new("CRYPTO_OPEN", "解密失败（口令不正确，或数据已损坏）"))?;
     let ciphertext_bytes = B64.decode(ciphertext)
@@ -154,7 +155,7 @@ pub fn open(
     open_raw(key, aad, &nonce_bytes, &ciphertext_bytes)
 }
 
-fn open_raw(key: &[u8], aad: &[u8], nonce: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, AppError> {
+fn open_raw(key: &[u8], aad: &[u8], nonce: &[u8], ciphertext: &[u8]) -> Result<Zeroizing<Vec<u8>>, AppError> {
     let cipher = Aes256Gcm::new_from_slice(key)
         .map_err(|_| AppError::new("CRYPTO_OPEN", "解密失败（口令不正确，或数据已损坏）"))?;
     if nonce.len() != NONCE_LEN {
@@ -168,6 +169,7 @@ fn open_raw(key: &[u8], aad: &[u8], nonce: &[u8], ciphertext: &[u8]) -> Result<V
                 aad,
             },
         )
+        .map(Zeroizing::new)
         .map_err(|_| AppError::new("CRYPTO_OPEN", "解密失败（口令不正确，或数据已损坏）"))
 }
 
@@ -181,7 +183,7 @@ pub fn seal_blob(key: &[u8], aad: &[u8], plaintext: &[u8]) -> AppResult<Vec<u8>>
 }
 
 /// 解 `seal_blob` 的产物。连 nonce 都不够长也归"解不开"，与 open 同一口径：不细分。
-pub fn open_blob(key: &[u8], aad: &[u8], packed: &[u8]) -> AppResult<Vec<u8>> {
+pub fn open_blob(key: &[u8], aad: &[u8], packed: &[u8]) -> AppResult<Zeroizing<Vec<u8>>> {
     if packed.len() <= NONCE_LEN {
         return Err(AppError::new("CRYPTO_OPEN", "解密失败（口令不正确，或数据已损坏）"));
     }
@@ -209,7 +211,7 @@ mod tests {
         let (nonce, ciphertext) = seal(&key, b"aad", VERIFY_PLAINTEXT).expect("加密");
 
         let opened = open(&key, b"aad", &nonce, &ciphertext).expect("解密");
-        assert_eq!(opened, VERIFY_PLAINTEXT);
+        assert_eq!(opened.as_slice(), VERIFY_PLAINTEXT);
 
         let wrong = derive_key("错误的口令", &params).expect("派生");
         let err = open(&wrong, b"aad", &nonce, &ciphertext).expect_err("必须失败");
@@ -239,7 +241,7 @@ mod tests {
         let picture = vec![0x89u8, b'P', b'N', b'G', 0, 1, 2, 3];
         let packed = seal_blob(&key, b"media:a", &picture).expect("封");
         assert!(packed.len() > picture.len(), "带上了 nonce 与 tag");
-        assert_eq!(open_blob(&key, b"media:a", &packed).expect("开"), picture);
+        assert_eq!(open_blob(&key, b"media:a", &packed).expect("开").as_slice(), picture);
         assert!(open_blob(&key, b"media:b", &packed).is_err(), "AAD 不成套就是解不开");
         assert_ne!(
             packed,

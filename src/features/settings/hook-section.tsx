@@ -1,12 +1,5 @@
 // 右键劫持节 — 长按阈值 / 充电弧 / 白名单 / 暂停开关 + 前台进程回显。
-//
-// 口径（与 Rust 侧 input 模块一致）：
-//  · 阈值滑条松手才提交，Rust 夹回区间后**按实际生效值回显**——界面上显示的
-//    永远是实际跑的值；
-//  · 白名单一行一条，保存即归一化，重拉后显示的是 Rust 归一后的生效名单；
-//  · 充电弧开关落库（`ring.charging`）：关掉后长按过程零反馈，松手直接出盘；
-//  · 暂停是"直到下次启动"的临时开关，重启即恢复（刻意不落库）；
-//  · 「上一个前台程序」读不到时（提权程序等）如实说明：按不在名单算。
+// 口径：设置提交后一律按 Rust 返回的实际生效值回显；暂停只到下次重启（刻意不落库）。
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { hookSetConfig, hookStatus } from "@/platform/commands";
@@ -103,7 +96,7 @@ export function HookSection() {
           checked={status?.charging ?? true}
           onChange={(event) => commitCharging(event.target.checked)}
         />
-        长按时先亮充电弧（快到位那一小段在手上转一圈；关掉则松手直接出盘）
+        长按时先亮充电弧（关掉则松手直接出盘）
       </label>
 
       <div className="flex flex-col gap-1">
@@ -156,13 +149,12 @@ export function HookSection() {
           checked={status?.paused ?? false}
           onChange={(event) => commitPaused(event.target.checked)}
         />
-        暂停劫持（重启后自动恢复——刻意不记住）
+        暂停劫持（重启后自动恢复）
       </label>
 
       <p className="text-[11px] text-[var(--panel-muted)]">
         上一个前台程序：
-        {status?.foreground ??
-          "读不到（提权或受保护进程）——这类程序按不在名单算，长按仍会唤起星环"}
+        {status?.foreground ?? "读不到（提权或受保护进程）——按不在名单算"}
       </p>
 
       {error !== null && (
