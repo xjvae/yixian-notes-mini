@@ -1,37 +1,9 @@
-// splash — 启动开场窗：**原生分层窗**，全程不碰 WebView2。
-//
-// 为什么只能是原生：这条要盖住的就是"双击到第一张便签之间那段无反馈"，而它的长度
-// ≈ 一扇 WebView2 冷启动（约 1s，见 `windows/ring.rs` 文件头）。用 webview 做开场窗
-// 等于把要盖住的代价再付一遍，也直接撞 ARCHITECTURE 那条定稿纪律——"为一条进度反馈
-// 去冷启动一扇 webview，恰恰会制造这功能想消掉的那种闪"。原生分层窗的首帧是几十毫秒级，
-// 正好排在开库之前落下去。
-//
-// 三条不许改的性质（改了就等于把便签挡在开场后面）：
-//  1. **绝不吃输入、绝不抢焦点**：`WS_EX_TRANSPARENT | NOACTIVATE | TOOLWINDOW`，全程不叫
-//     `SetForegroundWindow`。于是长按右键的低级钩子照旧（钩子看硬件输入，与窗样式无关），
-//     而**前台进程不变** → `input` 那套白名单判定完全不受影响。也**不向 input 公告矩形**：
-//     开场窗不是盘，公告了"盘外左键 = 收环"那笔账就乱了。
-//  2. **两条退路都比画面重要**：第一扇窗亮起来就退（`dismiss`），外加 `MAX_ALIVE_MS` 无条件
-//     退。便签自己的 reveal 兜底是 2000ms（`windows/float.rs`），这里给的是它 + 余量。
-//     还是那条定稿纪律：看不见便签比闪一下白严重。
-//  3. **演不成不许带走应用**：这一身跑在它自己的线程上，任何一步失败就记一行日志然后静默
-//     放弃。release 是 `panic = "abort"` 且没有 unwind，所以这条路上一个 unwrap 都不许留。
-//
-// 画面：与星环同一套语言的环。底环是 8% 墨（`data/theme.ts` 的 `RING_INK.divider`：浅色档
-// 0.08 / 深色档 0.10，这里同值），弧从 12 点扫满一圈，曲线 `cubic-bezier(0.22, 0.8, 0.28, 1)`
-// —— 项目里唯一现成的一条（`index.css`）；图标在 `ICON_FROM_MS` 起淡入；之后**停在满环静态
-// 待命**，不循环（等一个长度未知的东西还循环，就是 nagging）。
-//
-// 颜色跟系统深浅色（HKCU 的 `AppsUseLightTheme`）：scheme 存在 SQLite 的 settings 表里，
-// 而开场窗比开库更早。显式选了 light/dark 的人在开机那 600ms 可能差一档——这是刻意的取舍，
-// 换回来的是不开库也能有第一帧。
-//
-// 图标按它**自己的物理尺寸**画，不放大：Windows 上 `default_window_icon()` 取的是
-// `SM_CXICON` 那一档（96DPI 下 32×32，随系统缩放走），拉到 96 会糊，宁可小而清晰。
-//
-// 没有新依赖：`CreateDIBSection` 在 `Win32_Graphics_Gdi`，`UpdateLayeredWindow`/
-// `SystemParametersInfoW` 在 `Win32_UI_WindowsAndMessaging`，两个 feature 早就开着；
-// 只为读深浅色那一个值多开了 `Win32_System_Registry`（同一个 windows crate 的 cfg 开关）。
+// splash — 启动开场窗：**原生分层窗**，全程不碰 WebView2——它要盖掉的代价正是
+// WebView2 冷启动（约 1s），用 webview 做开场窗等于把这段再付一遍。
+// 三条不许改：1) 绝不吃输入、绝不抢焦点（WS_EX_TRANSPARENT|NOACTIVATE|TOOLWINDOW，不叫 SetForegroundWindow
+//    → 前台进程不变，input 白名单判定不受影响；也不向 input 公告矩形）；2) 两条退路都比画面重要：
+//    第一扇窗亮起就 dismiss，外加 MAX_ALIVE_MS 无条件退；3) 演不成不许带走应用——release 是 panic="abort" 且无 unwind，这条路上一个 unwrap 都不许留。
+// 颜色跟系统深浅色（HKCU 的 AppsUseLightTheme）：scheme 在 SQLite 里而开场窗早于开库，显式档位可能差一档——刻意取舍。
 
 use std::cell::RefCell;
 use std::ffi::c_void;
@@ -113,13 +85,11 @@ impl Reason {
     }
 }
 
-/// 已经有人叫退场（`dismiss` 与超时都写它）。建窗之后第一件事读它——
-/// 早于建窗到达的退场（比如极快的 reveal）不能丢
+/// 已经有人叫退场（`dismiss` 与超时都写它）；早于建窗到达的退场（极快的 reveal）不能丢
 static GONE: AtomicBool = AtomicBool::new(false);
 /// 第一个叫退场的原因（0 = 还没人叫过）
 static REASON: AtomicU8 = AtomicU8::new(REASON_NONE);
-/// 开场窗的 HWND（0 = 还没建或已收）。dismiss 只读它做投递。
-/// 存 usize 而不是指针：`HWND` 在这台 windows 版本上是指针型句柄，原子量只装得下整数
+/// 开场窗的 HWND（0 = 还没建或已收）。存 usize：`HWND` 是指针型句柄，原子量只装得下整数
 static HWND_ATOM: AtomicUsize = AtomicUsize::new(0);
 /// 这一身在进程里只跑一次
 static SPAWNED: AtomicBool = AtomicBool::new(false);
@@ -135,8 +105,7 @@ fn call_reason(code: u8) {
     GONE.store(true, Ordering::Release);
 }
 
-/// 开场窗的构成：每像素的半径/角度在创建时算一次，帧循环里只做比较与写像素
-/// （`atan2` 每帧重算 90k 次是白扔，而这条弧的时长是毫秒级）
+/// 开场窗的构成：每像素的半径/角度创建时算一次，帧循环只做比较与写像素（atan2 每帧 90k 次是白扔）
 struct Painter {
     size: u32,
     radius: Vec<f32>,
@@ -169,9 +138,8 @@ impl Painter {
                 angle[i] = dx.atan2(-dy).rem_euclid(std::f32::consts::TAU);
             }
         }
-        // 图标按它自己的物理尺寸画（不放大），居中；读不到就不画中心那块。
-        // 空覆盖层必须把边长一起归零：`paint` 里"icon_side > 0 就一定有位图可取"这条
-        // 依赖配对，配错了就是越界 panic（而这条线程一 panic 就带走整个应用）
+        // 图标按它自己的物理尺寸画（不放大，SM_CXICON 档拉到 96 会糊），居中；读不到就不画。
+        // 空覆盖层必须把边长一起归零——paint 依赖"icon_side > 0 就有位图可取"这条配对。
         let (icon, icon_side, icon_off) = match icon {
             Some((rgba, w, h)) if w > 0 && w == h => {
                 let side = w.min(size);
@@ -204,10 +172,8 @@ impl Painter {
         }
     }
 
-    /// 画一帧到 DIB 的像素缓冲里。`sweep` 是弧扫到的角度，`icon_a`/`fade` 各是 0..1
-    ///
-    /// 像素格式是 `CreateDIBSection` 给的 32bpp **预乘** BGRA——`UpdateLayeredWindow`
-    /// 配 `AC_SRC_ALPHA` 只收预乘的份，写非预乘会得到一圈发白的边。
+    /// 画一帧到 DIB 的像素缓冲里。`sweep` 是弧扫到的角度，`icon_a`/`fade` 各是 0..1。
+    /// 像素是 32bpp **预乘** BGRA——`UpdateLayeredWindow` 配 `AC_SRC_ALPHA` 只收预乘份，非预乘会得一圈发白的边。
     fn paint(&self, bits: *mut u8, sweep: f32, icon_a: f32, fade: f32) {
         if bits.is_null() || fade <= 0.0 {
             return;
@@ -220,7 +186,6 @@ impl Painter {
         let want_icon = icon_a > 0.0 && side > 0;
         for idx in 0..(w * w) {
             let band = band_coverage(self.radius[idx], self.inner, self.outer);
-            // 环带底：带内才有东西，扫过的段落实色，没扫到的留那条底环
             let mut base = [0f32; 4];
             if band > 0.0 {
                 let swept = self.angle[idx] <= sweep;
@@ -236,8 +201,7 @@ impl Painter {
                     && y - off < side
                 {
                     let j = ((y - off) * side + (x - off)) * 4;
-                    // 一律走 get：不变量"icon_side > 0 就必然有位图"已经在 Painter::new
-                    // 里配好了，但配错的形式是越界 panic —— 而这条线程一 panic 就带走整个应用
+                    // 一律走 get：配对一旦错了就是越界 panic，而这条线程 panic 会带走整个应用
                     let byte = |k: usize| self.icon.get(j + k).copied().unwrap_or(0) as f32 / 255.0;
                     let ia = byte(3) * icon_a * fade;
                     if ia > 0.0 {
@@ -301,8 +265,7 @@ fn ease(x: f64) -> f64 {
     bezier_axis((a + b) / 2.0, 0.8, 1.0)
 }
 
-/// 弧扫到哪儿（弧度）。`reduce` 档直接给满环：停在起点等于整条弧都不画，
-/// 那与"关掉动画却把反馈也关掉"是同一个错误（`index.css` 的 reduce 分支同口径）
+/// 弧扫到哪儿（弧度）。`reduce` 档直接给满环：停在起点等于整条弧都不画，与"关掉动画却把反馈也关掉"同错
 fn sweep_at(now_ms: u32, reduce: bool) -> f32 {
     if reduce {
         return std::f32::consts::TAU;
@@ -335,19 +298,13 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// 8 位通道的预乘：`c * a / 255` 四舍五入。分层窗只收预乘的份。
-///
-/// 这里别玩移位花招：`(c*a*257)>>8` 算出来是 `c*a*1.004`，大出 256 倍，
-/// 截成 u8 就是一团脏色（上一版踩的正是这条）。
+/// 8 位通道的预乘：`c * a / 255` 四舍五入，分层窗只收预乘份；别用 `(c*a*257)>>8` 花招——那是 c*a*1.004，截成 u8 就是一团脏色
 fn premultiply(c: u8, a: u32) -> u8 {
     (((c as u32 * a) + 127) / 255) as u8
 }
 
-/// 图标：源是 RGBA（tauri 的 `Image::rgba`），覆盖层要的是**预乘 BGRA**。
-///
-/// 取字节一律走 `get`：这条在开场线程上，而 release 是 `panic = "abort"` 且没有 unwind——
-/// 一次越界就会把整个应用带走，而开场窗凭什么都决定应用活不活。
-/// 源不够长就当图标读不到（返回空覆盖层，环照扫）。
+/// 图标：源是 RGBA（tauri 的 `Image::rgba`），覆盖层要的是**预乘 BGRA**；取字节一律走 `get`——
+/// 这条在开场线程上，release panic="abort" 无 unwind，一次越界带走整个应用。
 fn icon_overlay(rgba: &[u8], side: u32) -> Vec<u8> {
     let need = (side * side * 4) as usize;
     if rgba.len() < need {
@@ -365,8 +322,7 @@ fn icon_overlay(rgba: &[u8], side: u32) -> Vec<u8> {
     buf
 }
 
-/// 系统用的是浅色还是深色应用模式。读不到按**浅色**——猜错的代价只是配色不合适，
-/// 而开机头一帧给一块深灰，在浅色桌面上更刺眼
+/// 系统用的是浅色还是深色应用模式。读不到按**浅色**——开机头一帧给一块深灰，在浅色桌面上比配色不合适更刺眼
 fn apps_dark_theme() -> bool {
     let sub = wide("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize");
     let name = wide("AppsUseLightTheme");
@@ -391,8 +347,7 @@ fn apps_dark_theme() -> bool {
     }
 }
 
-/// Windows 的"提供动画效果"开关（设置 → 辅助功能 → 视觉效果）。
-/// 问不到按**开着**处理：那是绝大多数机器的现状，也是这套画面本来设计的样子
+/// Windows 的"提供动画效果"开关（设置 → 辅助功能 → 视觉效果）。问不到按**开着**处理——那是绝大多数机器的现状
 fn motion_reduced() -> bool {
     let mut on: u32 = 1;
     let ok = unsafe {
@@ -409,8 +364,7 @@ fn motion_reduced() -> bool {
     }
 }
 
-/// 这一身的所有跨调用状态。只由开场线程读写 → 所以放 thread_local，
-/// 连带原始指针也不用编 `unsafe impl Send`
+/// 这一身的所有跨调用状态，只由开场线程读写 → thread_local，原始指针也因此不用编 `unsafe impl Send`
 struct Session {
     painter: Painter,
     hwnd: HWND,
@@ -434,8 +388,7 @@ thread_local! {
 }
 
 impl Session {
-    /// 画一帧并交给系统。第一次交完才 `SW_SHOWNOACTIVATE` 露脸——
-    /// 分层窗在 `UpdateLayeredWindow` 之前是空的，先 show 就是闪一块透明矩形
+    /// 画一帧并交给系统。第一次交完才 `SW_SHOWNOACTIVATE`——分层窗在 UpdateLayeredWindow 之前是空的，先 show 会闪一块透明矩形
     fn frame(&mut self) -> bool {
         let now = self.started.elapsed().as_millis() as u32;
         if !GONE.load(Ordering::Acquire) && now >= MAX_ALIVE_MS {
@@ -559,8 +512,7 @@ unsafe extern "system" fn wndproc(
 
 /// 建窗 → 摆位 → 帧循环。失败一律返回 Err 由 `spawn` 记一行日志，绝不 panic
 fn attempt(icon: Option<(Vec<u8>, u32, u32)>) -> Result<(), String> {
-    // 缩放只能问主屏 DC：`GetDpiForWindow` 那档在 `Win32_UI_HiDpi` 里，
-    // 为一个 200 见方的画面不值得多开 feature
+    // 缩放只能问主屏 DC：`GetDpiForWindow` 在 `Win32_UI_HiDpi` feature 里，为一个 200 见方的画面不值得多开
     let scale = {
         let dc = unsafe { GetDC(None) };
         let dpi = unsafe { GetDeviceCaps(Some(dc), LOGPIXELSX) };
@@ -583,7 +535,6 @@ fn attempt(icon: Option<(Vec<u8>, u32, u32)>) -> Result<(), String> {
     let painter = Painter::new(scale, apps_dark_theme(), icon);
 
     let module = unsafe { GetModuleHandleW(None) }.map_err(|e| e.to_string())?;
-    // HMODULE 与 HINSTANCE 也是各自独立的指针 newtype（窗类与建窗都要后者）
     let instance = HINSTANCE(module.0);
     let class = wide(CLASS_NAME);
     let title = wide("开场");
@@ -602,8 +553,7 @@ fn attempt(icon: Option<(Vec<u8>, u32, u32)>) -> Result<(), String> {
     if unsafe { RegisterClassExW(&wc) } == 0 {
         return Err(format!("注册窗类失败：{}", std::io::Error::last_os_error()));
     }
-    // GDI 表面先备好再建窗：这样失败的那几条路径上还没有窗要销毁，账不容易漏
-    //
+    // GDI 表面先备好再建窗：失败路径上还没有窗要销毁，账不容易漏。
     // 32bpp top-down DIB：负高度 = 行序自上而下，省掉一次上下翻转
     let mem_dc = unsafe { CreateCompatibleDC(None) };
     if mem_dc.is_invalid() {
@@ -698,8 +648,7 @@ fn attempt(icon: Option<(Vec<u8>, u32, u32)>) -> Result<(), String> {
         }
     });
 
-    // 建窗这一刻才允许别人够得到这扇窗；早于此刻到达的退场由 GONE 兜住
-    // （不在这儿另记一行：下面第一帧就会按同一个原因记一次退场，两条日志只留一条）
+    // 建窗这一刻才允许别人够得到这扇窗；早于此刻到达的退场由 GONE 兜住（退场日志由第一帧统一记一次）
     HWND_ATOM.store(hwnd.0 as usize, Ordering::Release);
     let first = SESSION.with(|cell| cell.borrow_mut().as_mut().map(|s| s.frame()).unwrap_or(false));
     if !first {
@@ -743,7 +692,6 @@ pub fn spawn(app: &tauri::AppHandle) {
     if SPAWNED.swap(true, Ordering::AcqRel) {
         return; // 一进程一次
     }
-    // 图标读不到也要开场：中心不画东西，环照扫
     let icon = app
         .default_window_icon()
         .map(|image| (image.rgba().to_vec(), image.width(), image.height()));
@@ -759,8 +707,7 @@ pub fn spawn(app: &tauri::AppHandle) {
     }
 }
 
-/// 叫开场窗退场。**幂等且廉价**：没开过场就一次原子读返回；开过场也只投递一条消息，
-/// 真正的淡出与日志由开场线程自己做
+/// 叫开场窗退场。**幂等且廉价**：没开过场一次原子读返回；开过场也只投递消息，淡出与日志由开场线程自己做
 pub fn dismiss(reason: Reason) {
     if !SPAWNED.load(Ordering::Acquire) {
         return;
@@ -807,9 +754,7 @@ mod tests {
     #[test]
     fn 弧扫满是到点而不是提前() {
         assert!(sweep_at(0, false) < 0.01);
-        // `cubic-bezier(0.22, 0.8, 0.28, 1)` 是强缓出：时间过一半已经扫到九成以上，
-        // 所以"到点之前还没满"这个想当然的断言不成立。留在这里的是这条弧的脾气：
-        // 前半段甩过去、后半段收尾。
+        // 强缓出曲线：时间过半已扫到九成以上，"到点前还没满"的想当然不成立
         assert!(sweep_at(ARC_MS / 2, false) > std::f32::consts::TAU * 0.9);
         assert!((sweep_at(ARC_MS, false) - std::f32::consts::TAU).abs() < 1e-6);
         // 过了点不许继续涨（停在满环待命，不是循环）
@@ -818,7 +763,6 @@ mod tests {
 
     #[test]
     fn 关掉动画就是满环与满图标() {
-        // 停在起点 = 整条弧都不画，长按/开机反而彻底没反馈——那条 reduce 纪律的同一条理由
         assert_eq!(sweep_at(0, true), std::f32::consts::TAU);
         assert_eq!(icon_alpha_at(0, true), 1.0);
         assert_eq!(fade_at(0, true), 0.0);
@@ -866,7 +810,6 @@ mod tests {
 
     #[test]
     fn 预乘等于颜色乘alpha除255() {
-        // 上一版写的是 `(c*a*257)>>8` —— 那是 c*a*1.004，大出 256 倍，截成 u8 就是一团脏色
         assert_eq!(premultiply(200, 255), 200, "全不透明必须原样留着");
         assert_eq!(premultiply(200, 0), 0, "全透明必须归零");
         assert_eq!(premultiply(255, 128), 128);
@@ -895,7 +838,6 @@ mod tests {
 
     #[test]
     fn 源缓冲不够长就当没图标而不是越界() {
-        // 只有 1 像素的字节却要点 2×2：给空覆盖层（Painter 那边会把边长一起归零）
         assert!(icon_overlay(&[0, 0, 0, 0], 2).is_empty());
         // 刚好够的那一份要正常出图
         assert_eq!(icon_overlay(&[0, 0, 255, 255], 1).as_slice(), &[255, 0, 0, 255]);

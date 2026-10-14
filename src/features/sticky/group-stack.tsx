@@ -1,14 +1,8 @@
 // 叠窗 — 一叠一扇：同一组的几张便签共用一扇窗，在窗里翻着看。
-//
-// 内容渲染仍是 NoteContent 那一份：归组菜单照传（叠窗里也得能把手里这张移出去，
-// 否则「移进」是个单向门）。窗级动作（收起 / 贴边那颗「收回」）不从这里走——它们和
-// 单窗一样住标题条右侧（`WindowChrome` 的 trailing 槽），作者要的就是"两张纸同一个位置"。
-// 翻页控件走拖动条的 leading 槽。
-//
-// 几何不在这里管：Rust 的 frames::track 认 stickygrp-* 前缀，拖动合流 600ms 落
-// window_state，开窗时 apply_saved 原样放回。这里若再写一遍就是两个住址。
-// 唯一的例外是"展开尺寸"：收起期间 window_state 记的就是那条栏，恢复要的数
-// 只能另存一份到组行（见 handleCollapse）。
+// 内容渲染仍是 NoteContent 那一份，归组菜单照传（叠窗里也得能把手里这张移出去，否则「移进」是单向门）。
+// 窗级动作（收起 / 贴边那颗「收回」）与单窗同住标题条右侧（`WindowChrome` trailing 槽），翻页控件走 leading 槽。
+// 几何不在这里管：Rust 的 frames::track 认 stickygrp-* 前缀，拖动合流 600ms 落 window_state，开窗时原样放回——
+// 这里再写一遍就是两个住址。唯一例外是"展开尺寸"：收起期间 window_state 记的是那条栏，恢复要的数只能另存一份到组行。
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -33,7 +27,7 @@ import {
   BAR_MAX_WIDTH,
   STICKY_DEFAULT_SIZE,
   STICKY_MIN_SIZE,
-} from "@/features/sticky/window-statics";
+} from "@/data/window-geometry";
 import { useNote, useNotes, useStoreStatus } from "@/store/hooks";
 import { flushNow, removeNote } from "@/store/notes-store";
 import {
@@ -73,10 +67,7 @@ import { useGroupPresentation, type GroupPresentation } from "@/data/group-prese
 
 const SCOPE = "stack";
 
-/**
- * 每档怎么抽张，写在标题条上而不是让人猜：分页有箭头，色块签与手风琴各给一句。
- * 加了新档忘了在这里登记，标题条就少一句说明（不会画错，只是不说）。
- */
+/** 各档"怎么抽张"的标题条提示：分页靠箭头，色块签与手风琴在这里各给一句。新档忘了登记只少一句说明，不会画错 */
 const MODE_HINT: Partial<Record<GroupPresentation, string>> = {
   tabs: "点右侧色块翻张",
   accordion: "点标题行就地展开",
@@ -94,27 +85,21 @@ export function GroupStackWindow() {
   /** 置顶是这扇窗的当场状态：groups 行没有 pinned 列，重开按开窗规格回到置顶 */
   const [pinned, setPinned] = useState(true);
   /**
-   * 收起成标题栏那一档。**出生就读注入的全局**（identity.ts），不等 `group_list` 回来：
-   * 那一趟往返之前窗已经按 62 高亮了，首帧画一张正文再改形状就是"打开时抖一下"。
-   * 会话内的开合归这里，落库的读法走 `groups.collapsed`（同 `pinned` 那条分工）。
+   * 收起成标题栏那一档。**出生就读注入的全局**（identity.ts），不等 `group_list` 往返——
+   * 窗已按 62 高亮起，首帧画一张正文再改形状就是"打开时抖一下"。落库的读法走 `groups.collapsed`。
    */
   const [collapsed, setCollapsed] = useState(getStackCollapsedAtBirth);
-  /**
-   * 收起前那一刻量到的展开尺寸。组行是跨会话的那一份，这一份是**当场**的那一份：
-   * 刚收完就点展开，`group_list` 还没回来，读行会读到上一次的值（或 null 落到默认尺寸）。
-   */
+  /** 收起前那一刻量到的展开尺寸：组行是跨会话的那份，这份是**当场**的——刚收完就点展开时 `group_list` 还没回来，读行会读到旧值 */
   const [expanded, setExpanded] = useState<{ width: number; height: number } | null>(
     null,
   );
-  /** 收起栏上的到期角标按时钟分档（与单窗同一条），渲染期不许直接取 Date.now() */
+  /** 收起栏上的到期角标按时钟分档，渲染期不许直接取 Date.now() */
   const now = useNow();
-  /** 私密层自动上锁的"这扇窗里刚有人动过"上报，与单窗各挂一份 */
+  /** 私密层自动上锁的"这扇窗里刚有人动过"上报 */
   useNoteActivity();
   /**
-   * 改组合名。名字今天只在"拖两张到一起"那一刻抄第一张的标题，之后没有任何改的地方
-   * （作者报的这条）。草稿取 `group.name` 原文，输入框硬顶 `GROUP_NAME_MAX`；
-   * 空串/超长的最终口径在 Rust（`group::normalize_name`），所以提交完是**重读一遍**
-   * 拿回来的那份，不在这里再算一遍第二个真相。
+   * 改组合名：草稿取 `group.name` 原文，输入框硬顶 `GROUP_NAME_MAX`；空串/超长的最终口径在 Rust
+   * （`group::normalize_name`），所以提交完是**重读一遍**拿回来的那份，不在这里再算第二个真相。
    */
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState("");
@@ -143,9 +128,8 @@ export function GroupStackWindow() {
     [notes, gid],
   );
   /**
-   * 贴边那一档。判定与动画全在 `use-dock-snap`（与单窗同一份），这里给的是**组行**那一份
-   * target：展开尺寸取 `groups.width/height`（收起时被刷新过），落库走 `group_set_dock`。
-   * `group` 是异步到的 → 到之前按自由窗处理，到了且记着 docked 就补一次开机恢复。
+   * 贴边那一档：判定与动画全在 `use-dock-snap`，这里给的是**组行**那份 target——展开尺寸取
+   * `groups.width/height`，落库走 `group_set_dock`。`group` 异步到之前按自由窗处理，到了且记着 docked 就补一次开机恢复。
    */
   const dockTarget = useMemo<DockTarget | null>(
     () =>
@@ -226,7 +210,7 @@ export function GroupStackWindow() {
     };
   }, []);
 
-  // 这一叠翻空了（成员被删空或全被移走）就自己退场：空叠没有可显示的东西
+  // 这一叠翻空了（成员被删空或全被移走）就自己退场
   useEffect(() => {
     if (gid === null || !ready || members.length > 0) return;
     void closeGroupStack(gid).catch((error: unknown) =>
@@ -251,10 +235,8 @@ export function GroupStackWindow() {
   }, [pinned]);
 
   /**
-   * 原生最小尺寸跟着**这一档**走（与单窗那条 effect 同一条规则）：展开 = 220×200，
-   * 收起 = 不限。留着 220×200，那条 62 高的栏会被系统当场撑回 200。
-   * 出生时 Rust 已按 `groups.collapsed` 给过对的那一份，这里只管会话内切换与开机恢复
-   * 后的一致性（同档重贴一次是空操作）。
+   * 原生最小尺寸跟着**这一档**走：展开 = 220×200，收起 = 不限——留着 220×200，62 高的栏会被系统当场撑回 200。
+   * 出生时 Rust 已按 `groups.collapsed` 给过对的那份，这里只管会话内切换与开机恢复后的一致性（同档重贴是空操作）。
    */
   useEffect(() => {
     void setWindowMinSize(collapsed ? null : STICKY_MIN_SIZE).catch((error: unknown) =>
@@ -263,10 +245,8 @@ export function GroupStackWindow() {
   }, [collapsed]);
 
   /**
-   * 收起这一叠。三步的顺序不能换（单窗 handleMinimize 那条坑一模一样）：
-   *  1. 先撤原生下限——挂着 220×200 去缩，62 高的栏会被撑回 200；
-   *  2. 量**还没缩时**的尺寸，再缩到那条栏（量晚了量到的就是栏）；
-   *  3. 把展开尺寸报给 `group_set_collapsed`（为什么要报它，文件头那条讲过）。
+   * 收起这一叠。三步顺序不能换：先撤原生下限，再量**还没缩时**的尺寸、缩到那条栏（量晚了量到的就是栏），
+   * 最后把展开尺寸报给 `group_set_collapsed`。
    */
   const handleCollapse = useCallback((): void => {
     if (gid === null || collapsed) return;
@@ -317,7 +297,7 @@ export function GroupStackWindow() {
     })();
   }, [gid]);
 
-  // 与单窗同一条门：删的是私密那一张就先要口令（叠窗里一张一张删，挂起的也就是这一张）
+  // **删私密那一张一律再要一次口令**（正开着也要问）；叠窗一张一张删，挂起的是手里这一张
   const handleDelete = useCallback((): void => {
     if (shownId === null) return;
     const act = async () => {
@@ -328,7 +308,15 @@ export function GroupStackWindow() {
         logger.caught(SCOPE, "删除前落盘失败，仍继续删", error);
       }
     };
-    const run = shown?.private === true ? requirePrivateUnlock(act) : act();
+    const run =
+      shown?.private === true
+        ? requirePrivateUnlock({
+            noteId: shownId,
+            purpose: "delete",
+            action: act,
+            what: "删这张私密便签（叠窗）",
+          })
+        : act();
     run.catch((error: unknown) => logger.caught(SCOPE, "删除便签失败", error));
   }, [shownId, shown?.private]);
 
@@ -350,8 +338,8 @@ export function GroupStackWindow() {
 
   const theme = themeColors(shown.theme, resolved);
   /**
-   * 贴着边、还没滑出：整扇窗只有 20×20，把壳体塞进去就是一团捏不住的纸屑 ——
-   * 与单窗同一条，整支换成小签。点它滑出（滑出来是**这一档**的样子：收起态就是那条栏）。
+   * 贴着边、还没滑出：整扇窗只有 20×20，把壳体塞进去就是一团捏不住的纸屑——整支换成小签。
+   * 点它滑出（滑出来是**这一档**的样子：收起态就是那条栏）。
    */
   if (dock.docked && !dock.revealed) {
     return (
@@ -364,18 +352,14 @@ export function GroupStackWindow() {
     );
   }
   const total = members.length;
-  /**
-   * 收起那一档不翻张：箭头、扇面切片与"怎么抽张"那句说明一起收——正文没画出来，
-   * 箭头点了也没东西可看，留着只会在 360 宽的条里把组合名挤没。
-   */
+  /** 收起那一档不翻张：正文没画出来，箭头点了也没东西看，还会把 360 宽条里的组合名挤没 */
   const paging = !collapsed && presentation === "pages";
   /** 只有分页给箭头：色块签与手风琴的抽张动作都在纸面上，不在标题条上 */
   const turning = paging;
   const hint = collapsed || paging ? null : (MODE_HINT[presentation] ?? null);
   /**
    * 收起栏上的到期角标：这一叠里**当前那张**是提醒且没勾掉才给。
-   * 为什么要它——收起来的叠窗只剩一条栏，到点的提醒要是只住在通知里，
-   * 那条 toast 早就散了，用户回头看不出"这一叠里有事没办"。
+   * 收起来只剩一条栏、toast 早散了——没它就看不出"这一叠里有事没办"。
    */
   const due = describeDue(shown.dueAt, shown.doneAt, now);
   const dueUrgent = due.state === "overdue" || due.state === "today";
@@ -387,18 +371,16 @@ export function GroupStackWindow() {
       <span
         className="shrink-0 rounded-full px-1.5 py-0.5 text-[10px]"
         style={{
-          backgroundColor: dueUrgent ? theme.accent : "rgba(0,0,0,0.06)",
-          color: dueUrgent ? "#fff" : theme.ink,
+          backgroundColor: dueUrgent ? `${theme.accent}26` : "rgba(0,0,0,0.06)",
+          color: theme.ink,
+          border: dueUrgent ? `1px solid ${theme.accent}` : "1px solid transparent",
         }}
       >
         {due.text}
       </span>
     ) : null;
 
-  /**
-   * 「收起为标题栏」这颗钮，与单窗那颗住在同一个槽（`WindowChrome` 的 trailing，
-   * 标题条右侧）。作者要的就是这个统一：两张纸的最小化钮都在右上角。
-   */
+  // 「收起为标题栏」钮走 trailing 槽，与单窗同位（理由见 `WindowChrome` trailing 注释）
   const collapseButton = (
     <button
       type="button"
@@ -436,7 +418,6 @@ export function GroupStackWindow() {
             </button>
           )}
           {paging && (
-            /* 扇面切片：一张一竖条，当前那张立起来；点条直接跳到那一张 */
             <div
               className="flex items-end gap-0.5"
               role="group"
@@ -525,11 +506,8 @@ export function GroupStackWindow() {
               <span className="flex min-w-0 items-center gap-0.5">
                 <Layers size={12} aria-hidden className="shrink-0" />
                 {/*
-                  字号跟着单窗那条栏走（`text-xs` + semibold，作者报"组合最小化标题字太小"——
-                  原来 10px 是这条栏里最小的一号字，收起后整条栏就剩它一个标题）。
-                  名字自己占一格才截得出省略号：文本直接挂在 flex 容器上是个"匿名 flex item"，
-                  `truncate` 里只有 overflow:hidden 对它生效，出来是没有省略号的半截字。
-                  上限 168 是给收起那一档留的——整条栏才 360 宽，长名字会把右边三颗钮顶出窗。
+                  名字自己占一格才截得出省略号：文本直接挂在 flex 容器上是"匿名 flex item"，truncate 只剩 overflow 生效。
+                  上限 168 是给收起档留的——整条栏才 360 宽，长名字会把右边三颗钮顶出窗。
                 */}
                 <span
                   className="max-w-[168px] truncate text-xs font-semibold"

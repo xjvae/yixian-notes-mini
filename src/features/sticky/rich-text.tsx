@@ -184,7 +184,7 @@ function LocalImage({
         className={`${shell} rounded-md border border-dashed px-2 py-3 text-[11px]`}
         style={{ color: ink, borderColor: "rgba(0,0,0,0.2)" }}
       >
-        这张图解不开（私密便签，解锁后才看得到）
+        这张图解不开（私密便签，揭开这张后才看得到）
       </span>
     );
   }

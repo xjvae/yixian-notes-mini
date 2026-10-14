@@ -1,11 +1,7 @@
-// monitor — 显示器几何的唯一住址。
-//
-// 两份数据分开取，因为用途不一样：
-//  · **工作区**（屏幕减掉任务栏那块）走 Win32 `GetMonitorInfoW`：贴边细丝要贴它，
-//    任务栏底下不留东西。这份 unsafe 只留这里，别处调它。
-//  · **整块屏**的矩形 + 那块屏自己的缩放走 tauri `available_monitors`，并且**缓存**：
-//    星环要按"按下点真正落在哪块屏"摆位。这条查询要过主线程，所以由采样线程按拍
-//    刷进来，不在开窗那一刻现查（旧实现同样缓存）。
+// monitor — 显示器几何的唯一住址。两份数据分开取，因为用途不一样：
+//  · **工作区**（屏幕减掉任务栏）走 Win32 GetMonitorInfoW：贴边细丝要贴它；这份 unsafe 只留这里，别处调它。
+//  · **整块屏**矩形 + 那块屏自己的缩放走 tauri available_monitors 并**缓存**：这条查询要过主线程，
+//    由采样线程按拍刷进来，不在开窗那一刻现查。
 
 use std::sync::RwLock;
 
@@ -24,8 +20,7 @@ pub struct WorkArea {
 }
 
 impl WorkArea {
-    /// 把 (w, h) 尺寸的块整块夹进本矩形，返回左上角。块比矩形还大时贴左上角
-    /// （clamp 的 min>max 会直接 panic，所以先取 max）
+    /// 把 (w, h) 尺寸的块整块夹进本矩形，返回左上角。块比矩形大时贴左上角——clamp 的 min>max 会 panic，所以先取 max
     pub fn clamp_block(&self, point: (i64, i64), width: i64, height: i64) -> (i64, i64) {
         let max_x = (self.x + self.width - width).max(self.x);
         let max_y = (self.y + self.height - height).max(self.y);
@@ -33,7 +28,7 @@ impl WorkArea {
     }
 
     /// 一块 `width × height`（物理像素）在本矩形里**居中**的左上角。
-    /// 奇数尺寸差的那一像素归右下（整数除法向下取整），不影响观感，只要稳定就行。
+    /// 奇数尺寸差的那一像素归右下（整数除法向下取整），只要稳定就行。
     pub fn center_block(&self, width: i64, height: i64) -> (i64, i64) {
         self.clamp_block(
             (
@@ -47,9 +42,7 @@ impl WorkArea {
 }
 
 /// 一块屏的**整块**物理矩形与它自己的缩放。
-///
-/// 整块而不是工作区：星环是浮在桌面上的盘，任务栏那一条也算地方——夹工作区的话，
-/// 贴着屏幕底部长按出来的盘会被往上顶起一整个任务栏的高度，而盘心还自称在光标上。
+/// 整块而不是工作区：星环贴着屏幕底部长按时夹工作区会被顶起一整个任务栏高度，而盘心还自称在光标上。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Screen {
     pub left: i64,
@@ -60,8 +53,7 @@ pub struct Screen {
 }
 
 impl Screen {
-    /// 物理点是否落在这块屏上。含左上、不含右下：相邻屏共享的那条边界不许双算，
-    /// 否则"落在两块屏上"的按点随机取决于遍历顺序。
+    /// 物理点是否落在这块屏上。含左上、不含右下：相邻屏共享的边界不许双算，否则落点随遍历顺序漂。
     pub fn contains(&self, x: i64, y: i64) -> bool {
         x >= self.left
             && x < self.left + self.width
@@ -87,8 +79,7 @@ impl Screen {
     }
 }
 
-/// 屏表缓存。读侧在消费线程（开窗那一刻），那里可以拿锁——钩子回调不许的规矩
-/// 不在这条路上（回调只往通道里投编号，见 `input::win_hook`）。
+/// 屏表缓存。读侧在消费线程（开窗那一刻），可以拿锁——钩子回调不许锁的规矩不在这条路上。
 static SCREENS: RwLock<Vec<Screen>> = RwLock::new(Vec::new());
 
 fn screen_of(monitor: &tauri::Monitor) -> Screen {
@@ -118,11 +109,8 @@ pub fn refresh(app: &tauri::AppHandle) {
 }
 
 /// 按下点真正落在的那块屏；命不中给 `None`。
-///
-/// 为什么"在哪块屏"必须在**物理空间**里问：不同缩放的屏，逻辑矩形会互相盖住
-/// （主屏 100% + 副屏 150% 时，副屏的逻辑区间就压进主屏那一段），只有物理坐标
-/// 有唯一答案。命不中（刚拔掉屏那一瞬）就返回 None，调用方宁可"以点为中心不夹取"，
-/// 也不许退化成夹到主屏——那正是"星环自己跳回主屏"的形状。
+/// "在哪块屏"必须在**物理空间**问：不同缩放的屏逻辑矩形会互相盖住，只有物理坐标有唯一答案。
+/// 命不中（刚拔屏那一瞬）调用方宁可"以点为中心不夹取"，也不许退化成夹主屏——那是"星环自己跳回主屏"的形状。
 pub fn at_physical(x: i64, y: i64) -> Option<Screen> {
     let guard = SCREENS
         .read()
@@ -144,8 +132,7 @@ pub fn at(point: (i64, i64)) -> Option<WorkArea> {
         x: point.0 as i32,
         y: point.1 as i32,
     };
-    // SAFETY：MONITORINFO 的 cbSize 按约定填好；GetMonitorInfoW 只读显示器信息，
-    // 不持有任何跨调用指针。WindowsAndMessaging/Gdi 的这两个调用不涉及其它线程。
+    // SAFETY：MONITORINFO 的 cbSize 按约定填好；GetMonitorInfoW 只读显示器信息，不持有跨调用指针
     let area = unsafe {
         let monitor = MonitorFromPoint(win_point, MONITOR_DEFAULTTONEAREST);
         let mut info = MONITORINFO {
@@ -170,22 +157,15 @@ pub fn cursor() -> Option<(i64, i64)> {
     use windows::Win32::Foundation::POINT;
     use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
     let mut point = POINT { x: 0, y: 0 };
-    // SAFETY：GetCursorPos 只往 &mut point 写两个 LONG，无其它输入；
-    // 返回值判 BOOL，FALSE 时不读 point 的内容。
+    // SAFETY：GetCursorPos 只往 &mut point 写两个 LONG；返回值判 BOOL，FALSE 时不读 point 的内容
     let ok = unsafe { GetCursorPos(&mut point) }.is_ok();
     ok.then_some((point.x as i64, point.y as i64))
 }
 
-/// 一扇窗的**出生位置**：光标所在那块屏的**工作区**正中，再按 `offset_logical`
-/// （逻辑像素）向右下错开。尺寸同样按逻辑像素给，内部按那块屏自己的缩放换算。
-///
-/// 为什么居中要按工作区而不是整块屏：任务栏占的那一条也算地方，按整块屏居中
-/// 会把窗的下沿压到任务栏底下，看着就不是居中。
-/// 为什么按光标所在屏：多屏时手在哪块屏，窗就该出现在哪块屏；只有一块屏时，
-/// 与"主屏居中"是同一个答案。
-///
-/// 问不到（屏表缓存还没刷出来、或者根本没有显示器）就给 `None`，交回系统摆——
-/// 与 `guide.rs::placement` 同一条兜底口径，宁可位置普通也不要跳到别的屏。
+/// 一扇窗的**出生位置**：光标所在那块屏的**工作区**正中，再按 `offset_logical`（逻辑像素）
+/// 向右下错开。尺寸同样按逻辑像素给，内部按那块屏自己的缩放换算。
+/// 按工作区不按整块屏居中，否则窗下沿被任务栏吃掉；按光标所在屏，手在哪块窗就出现在哪块。
+/// 问不到（屏表还没刷出、或没有显示器）给 `None` 交回系统摆——宁可位置普通也不要跳到别的屏。
 pub fn spawn_centered(
     size_logical: (f64, f64),
     offset_logical: (f64, f64),
@@ -219,7 +199,6 @@ mod tests {
     fn 块整块夹回工作区() {
         // 光标贴右缘：环的左上角要退到"右边刚好不出界"
         assert_eq!(area().clamp_block((1900, 300), 420, 420), (1500, 300));
-        // 贴下缘同理
         assert_eq!(area().clamp_block((100, 1030), 420, 420), (100, 620));
         // 块比工作区还大时不许 panic，也不许负到看不见的地方
         assert_eq!(area().clamp_block((500, 500), 4000, 4000), (0, 0));
@@ -227,7 +206,7 @@ mod tests {
 
     #[test]
     fn 居中落点算的是工作区不是整块屏() {
-        // 他这台：2560×1440，任务栏占 48 → 工作区 2560×1392。一张默认便签 320×300
+        // 2560×1440、任务栏占 48 → 工作区 2560×1392；默认便签 320×300、口令窗 420×470
         let wide = WorkArea {
             x: 0,
             y: 0,
@@ -235,9 +214,8 @@ mod tests {
             height: 1392,
         };
         assert_eq!(wide.center_block(320, 300), (1120, 546));
-        // 口令窗 420×470
         assert_eq!(wide.center_block(420, 470), (1070, 461));
-        // 按整块屏（1440）算会落到 570，那 24 像素就是被任务栏吃掉的那一截
+        // 按整块屏（1440）算的落点就是被任务栏吃掉的那一截
         assert_ne!(wide.center_block(320, 300).1, (1440 - 300) / 2);
     }
 
@@ -308,8 +286,7 @@ mod tests {
     const MARGIN_100: i64 = 4;
     const MARGIN_150: i64 = 6;
 
-    /// 边界口径：含左上、不含右下。相邻屏共享的那条缝不许双算，
-    /// 否则同一个按点落在哪块屏取决于遍历顺序（盘就会在两块屏之间跳）。
+    /// 边界口径：含左上、不含右下——共享缝双算的话，同一个按点落在哪块屏取决于遍历顺序，盘会在两屏间跳。
     #[test]
     fn 屏命中含左上不含右下() {
         assert!(PRIMARY.contains(0, 0));
@@ -321,10 +298,8 @@ mod tests {
         assert!(!PRIMARY.contains(999_999, 0), "哪块都不在就给 None 的原料");
     }
 
-    /// 副屏（150%）贴右缘的一下长按：盘必须留在**那块屏**里。
-    ///
-    /// 拿"窗自己的缩放"或"只认主屏的矩形"来算都会跳回主屏——主屏那支给出的
-    /// 上界是 1920-360-4=1556，正好是用户报"星环自己跑掉"时看到的那个数。
+    /// 副屏（150%）贴右缘长按：盘必须留在**那块屏**里。
+    /// 拿窗自己的缩放或只认主屏矩形来算都会跳回主屏（主屏那支给出上界 1556——正是用户看到"星环跑掉"的数）。
     #[test]
     fn 副屏贴右缘的盘夹在副屏内() {
         let (left, top) =

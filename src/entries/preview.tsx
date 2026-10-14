@@ -161,9 +161,9 @@ export function PreviewStudio() {
           便签 {snap.stickies.filter((row) => !row.deleted).length} · 组{" "}
           {snap.groups.length} · 私密{" "}
           {snap.private.configured
-            ? snap.private.unlocked
-              ? "已解锁"
-              : "已锁"
+            ? snap.private.revealed.length === 0
+              ? "全锁着"
+              : `开着 ${snap.private.revealed.length} 张`
             : "未配置"}{" "}
           · 命令 {snap.log.length}
         </span>

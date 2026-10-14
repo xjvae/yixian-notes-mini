@@ -1,14 +1,8 @@
-// NoteContent — 便签内容渲染的**唯一**实现：类型切换、标题、四类内容体、
-// 标签、失败反馈、私密遮罩、页脚动作。单窗与叠窗都渲染它，谁也不许自己抄一份。
-//
-// 正文是**两态**的：默认阅读态（body-view 画识别出来的链接/代码/图），点进去是编辑态
-// （一个 textarea，maxLength 仍是 BODY_MAX）。为什么要两态：富内容渲染不进 textarea，
-// 而 textarea 才是"打字不会出乱子"的那一个。两态读同一份 note.body，没有第二份真相。
-//
-// 窗级动作（收起/贴边收纳）不住在这儿了——它们和叠窗一起统一到标题条右侧
-// （`WindowChrome` 的 trailing 槽）；删除动作经 `onDelete` 由宿主决定（单窗=删并关窗，
-// 叠窗=删并翻页）。
-// 遮罩态（私密未解锁）也在这里处理：真身不在内存，标题/正文/标签区整体换锁面。
+// NoteContent — 便签内容渲染的**唯一**实现（单窗与叠窗都渲染它，谁也不许自己抄一份）：
+// 类型切换、标题、四类内容体、标签、失败反馈、私密遮罩、页脚动作。
+// 正文两态：默认阅读态（body-view 画识别出的链接/代码/图），点进去是编辑态 textarea（maxLength=BODY_MAX）。
+// 为什么两态：富内容渲染不进 textarea，而 textarea 才是打字不会出乱子的那一个；两态读同一份 note.body，没有第二份真相。
+// 遮罩态（私密未解锁）也在这里处理：真身不在内存，标题/正文/标签区整体换锁面。窗级动作归标题条右侧，删除经 onDelete 由宿主决定。
 
 import {
   useCallback,
@@ -20,6 +14,7 @@ import {
   type ReactNode,
 } from "react";
 import {
+  EyeOff,
   History,
   ImagePlus,
   Lock,
@@ -54,7 +49,7 @@ import {
   plainBody,
 } from "@/data/note-types";
 import { describeDue } from "@/data/due";
-import { BODY_MAX, ITEM_MAX, shouldShowCount } from "@/data/limit";
+import { BODY_MAX, ITEM_MAX, TAG_MAX, TITLE_MAX, shouldShowCount } from "@/data/limit";
 import { withoutMediaRef } from "@/data/body-parse";
 import { isAcceptedMime } from "@/data/image-input";
 import { normalizeTagInput, tagInk } from "@/data/tags";
@@ -65,26 +60,30 @@ import { TimelineBody } from "@/features/sticky/timeline-body";
 import { ReminderFields } from "@/features/sticky/reminder-fields";
 import { isMasked, usePrivateState } from "@/data/private-state";
 import { useWriteFailures } from "@/store/hooks";
-import { updateNote } from "@/store/notes-store";
+import { flushNow, getNote, updateNote } from "@/store/notes-store";
 import {
   mediaDelete,
   mediaGet,
   mediaSetPrivate,
   openUnlockWindow,
+  privateLock,
 } from "@/platform/commands";
+import { lockAfterMark } from "@/data/lock-after-mark";
+import { requirePrivateUnlock } from "@/window/private-gate";
 import { describeError } from "@/platform/errors";
 import { logger } from "@/platform/logger";
 import type { StickyContentType, StickyNote } from "@/platform/contracts";
 
 const SCOPE = "sticky";
+/** 「要不要立即锁回去」那 5 秒。比回收站/恢复那两处两段确认（3 秒）长一点：那是确认删除，这是顺手一问 */
+const LOCK_CONFIRM_MS = 5000;
 
 export interface NoteContentProps {
   id: string;
   note: StickyNote;
   /** 页脚最前面的槽：归组菜单。单窗与叠窗都传——叠窗里也得能把手里这张移出去 */
   leadingActions?: ReactNode;
-  /** 收起为标题栏。右键菜单里也有这一项，所以得拿到函数而不只是那个钮
-   * （那颗**钮**不住在这儿了——它和叠窗那颗统一到标题条右侧） */
+  /** 收起为标题栏。右键菜单里也有这一项，所以拿到的是函数而不只是按钮。 */
   onCollapse?: () => void;
   onDelete: () => void;
 }
@@ -108,9 +107,7 @@ export function NoteContent({
   const dueUrgent = due.state === "overdue" || due.state === "today";
   const masked = isMasked(note, priv);
 
-  // 自动长高的三态：null 跟随全局 / true 强制开着 / false 强制固定。
-  // 点一下按 null → true → false → null 转一圈：压成两态就丢了"跟随全局"那一档，
-  // 而那是全局开关唯一的全局出口（不然开了全局就再也关不掉单张的跟随）
+  // 自动长高三态 null/true/false（点一下转一圈）；不能压成两态——"跟随全局"那档是关掉全局开关的唯一出口。
   const autoDefault = useAutoSizeDefault();
   const autoEffective = note.autoSize ?? autoDefault;
   const autoNext = note.autoSize === null ? true : note.autoSize === false ? null : false;
@@ -122,8 +119,6 @@ export function NoteContent({
         : "自动长高：这张是手拉的固定尺寸";
 
   // —— 正文两态与图片 ——
-  // 阅读态画识别结果（链接/代码/图），编辑态还是那个 textarea：富内容渲染不进 textarea，
-  // 而 textarea 才是"打字不会出乱子"的那一个。两态共用同一份 note.body，没有第二份真相。
   const [editingBody, setEditingBody] = useState(false);
   const [bodyMessage, setBodyMessage] = useState<string | null>(null);
   const bodyRef = useRef<HTMLTextAreaElement>(null);
@@ -136,19 +131,28 @@ export function NoteContent({
     if (editingBody) bodyRef.current?.focus();
   }, [editingBody]);
 
+  /** 内存里此刻那一份（不是渲染闭包里的 `note`）：跨过 await 后还要改这张时用它——await 期间
+   *  人还在打字、updateNote 每下换新对象，闭包里那份已成旧快照。 */
+  const liveNote = (): StickyNote | null => getNote(id);
+  const liveBody = (): string => getNote(id)?.body ?? note.body;
+
   /** 存好之后把引用插进正文的光标处（不在编辑态就插到末尾） */
   const attachToBody = async (files: File[]): Promise<void> => {
-    const caret = editingBody
-      ? (bodyRef.current?.selectionStart ?? note.body.length)
-      : note.body.length;
     const { refs, ids } = await images.attach(files, {
-      room: BODY_MAX - note.body.length,
+      room: BODY_MAX - liveBody().length,
       isPrivate: note.private,
     });
     if (refs.length === 0) return;
+    // 这一串 await 期间人还在打字、每下换掉内存里那份——光标与正文都必须从**落定那一刻**重算，
+    // 拿闭包旧值拼回去会把这几百毫秒打的字整个吃掉
+    const body = liveBody();
+    const caret = Math.min(
+      editingBody ? (bodyRef.current?.selectionStart ?? body.length) : body.length,
+      body.length,
+    );
     const block = refs.join("\n");
-    const head = note.body.slice(0, caret);
-    const tail = note.body.slice(caret);
+    const head = body.slice(0, caret);
+    const tail = body.slice(caret);
     const joined =
       head +
       (head === "" || head.endsWith("\n") ? "" : "\n") +
@@ -156,9 +160,7 @@ export function NoteContent({
       (tail === "" ? "\n" : tail.startsWith("\n") ? "" : "\n") +
       tail;
     if (joined.length > BODY_MAX) {
-      // 预算没拦住（正文里已有内容比估的挤）。这里**不能** slice 截断：截一半等于把
-      // `![…](media://m…)` 切成一句认不出来的残句——图躺在库里却永远显示不出来。
-      // 宁可把刚存的删掉，回一句"放不下"
+      // 预算没拦住也不能 slice 截断——截一半把 `![…](media://m…)` 切成认不出的残句，图永远显不出；宁可回滚刚存的、回一句"放不下"
       for (const mediaId of ids) {
         void mediaDelete(mediaId).catch((error: unknown) =>
           logger.caught(SCOPE, "回滚刚存的图失败（正文放不下）", error),
@@ -170,11 +172,8 @@ export function NoteContent({
     updateNote(id, { body: joined });
   };
 
-  /**
-   * 阅读态里"删掉这张图"：库里的字节与那句引用一起走。
-   * `row` 给了就是清单/时间轴那一条里的图 —— 摘的是那一条的文本，不是正文
-   * （同一条引用在两边都可能出现，所以必须按目标摘，别按正文一把梭）。
-   */
+  /** 阅读态"删掉这张图"：库里字节与引用一起走。给了 `row` 就摘那一条的文本（同一引用正文/条目
+   *  都可能出现，须按目标摘、别按正文一把梭）。 */
   const dropImage = (mediaId: string, row: RowRef | null = null): void => {
     const target = row === null ? note.body : rowText(note, row);
     if (target === null) return;
@@ -190,18 +189,18 @@ export function NoteContent({
     );
   };
 
-  /**
-   * 把图存好并追加到某一条末尾 —— 与清单/时间轴自己那条粘图的路同一条口径
-   * （`room` 先算、放不下就回滚刚存的字节、空条不垫前导换行）。
-   */
+  /** 把图存好追加到某条末尾——与清单/时间轴粘图同口径（room 先算、放不下回滚、空条不垫换行）。 */
   const attachToRow = async (row: RowRef, files: File[]): Promise<void> => {
-    const current = rowText(note, row);
-    if (current === null) return;
+    const before = rowText(liveNote() ?? note, row);
+    if (before === null) return;
     const { refs, ids } = await images.attach(files, {
-      room: rowRoom(current),
+      room: rowRoom(before),
       isPrivate: note.private,
     });
     if (refs.length === 0) return;
+    // 同 `attachToBody`：这一串 await 期间那一条可能又被改过，追加的对象必须是当下那一份
+    const current = rowText(liveNote() ?? note, row);
+    if (current === null) return;
     const block = refs.join("\n");
     const next = current === "" ? block : `${current}\n${block}`;
     if (next.length > ITEM_MAX) {
@@ -213,38 +212,98 @@ export function NoteContent({
       setBodyMessage(`这条放不下这些图片引用（还差 ${next.length - ITEM_MAX} 个字）`);
       return;
     }
-    const patch = patchRowText(note, row, next);
+    const patch = patchRowText(liveNote() ?? note, row, next);
     if (patch === null) return;
     updateNote(id, patch);
   };
 
-  /** 私密标记翻面。页脚那个钮与右键菜单走的是同一条，别写两份 */
-  const togglePrivate = useCallback((): void => {
-    if (note.private && (priv.active ? priv.unlocked : true)) {
-      updateNote(id, { private: false });
-      // 正文被搬出封套，图也要搬回来：media_set_private 只重过密文，
-      // id 不变，所以正文里那句 media:// 引用一个字都不用改
-      void mediaSetPrivate(id, false).catch((error: unknown) =>
-        logger.caught(SCOPE, "把私密图搬回明文失败（内容仍在库里）", error),
-      );
-      return;
-    }
-    if (!note.private && priv.active && priv.unlocked) {
-      updateNote(id, { private: true });
-      void mediaSetPrivate(id, true).catch((error: unknown) =>
-        logger.caught(SCOPE, "加密这张便签的图失败（图仍是明文）", error),
-      );
-      return;
-    }
-    // 私密层还没配 / 没解锁：先开口令窗，这一次不翻面
-    void openUnlockWindow().catch((error: unknown) =>
-      logger.caught(SCOPE, "开口令窗失败", error),
-    );
-  }, [id, note.private, priv.active, priv.unlocked]);
+  /** 走过口令窗标记成私密后"要不要立刻锁回去"的 5 秒确认态。只在真输过口令那条路亮起：
+   *  已解锁时点标记的人没输密码，不该被问。 */
+  const [lockConfirm, setLockConfirm] = useState(false);
+  const lockConfirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // —— 右键菜单 ——
-  // 命中什么就给什么（判定在 note-menu.ts，纯函数），尾巴那几项不分对象一律给。
-  // 叠窗里也照给，只是没有"收起为标题栏"那一档（onCollapse 不传）。
+  /** 翻这张的密级，图跟内容走同一密级（media_set_private 只重过密文、id 不变，正文的 media:// 引用不用改）。
+   *  这发 Promise 交回调用方、不 fire-and-forget：紧接着可能"立即锁定"，抢在图重加密落定前锁上 → 密钥没了、图永远停明文而行上写着 private=1。
+   *  顺序**先图、后内容**：翻回公开时 sticky::upsert 会把密文行和**那张的键行**一起摘掉，键行先没那批图就再也解不开。
+   *  图那一发没成就**到此为止**：内容翻过去就等于行上写着私密而图摊着明文，那个标记是假的。 */
+  const applyPrivate = useCallback(
+    async (want: boolean): Promise<void> => {
+      try {
+        await mediaSetPrivate(id, want);
+      } catch (error: unknown) {
+        logger.caught(
+          SCOPE,
+          want
+            ? "加密这张便签的图失败（图仍是明文）"
+            : "把私密图搬回明文失败（内容仍在库里）",
+          error,
+        );
+        setBodyMessage(
+          want ? "这张的图没加密上，先没标记成私密" : "这张的图没搬回明文，先没翻回公开",
+        );
+        return;
+      }
+      setBodyMessage(null);
+      updateNote(id, { private: want });
+    },
+    [id],
+  );
+
+  /** 摆出"要不要立即锁回去"那 5 秒；到点自己收，不等他回答 */
+  const armLockConfirm = useCallback((): void => {
+    if (lockConfirmTimer.current !== null) clearTimeout(lockConfirmTimer.current);
+    setLockConfirm(true);
+    lockConfirmTimer.current = setTimeout(() => setLockConfirm(false), LOCK_CONFIRM_MS);
+  }, []);
+
+  /** 「立即锁定」唯一那条路：**先把在途改动落完、再丢密钥**。少这一步，刚打完不到 250ms 的字会停在内存里——
+   *  锁一落包装层只能往行上写空占位，那几个字当场没了。flushNow 自己收失败进在途队列（不抛），落不成也照常锁。 */
+  const lockNow = useCallback(async (): Promise<void> => {
+    await flushNow();
+    await privateLock().catch((error: unknown) =>
+      logger.caught(SCOPE, "立即锁定没成", error),
+    );
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (lockConfirmTimer.current !== null) clearTimeout(lockConfirmTimer.current);
+    },
+    [],
+  );
+
+  /** 页脚那颗**私密开关**（右键菜单同一回调）。只管翻密级；收回是旁边那颗 EyeOff 的事 */
+  const togglePrivate = useCallback((): void => {
+    const wantsMark = !note.private;
+    // 私密层还没立起来时"翻回公开"没有密可撤：行上本来就摊着明文，直接写就行
+    // （反过来"标记成私密"仍要走口令窗——那一发是把口令立起来）
+    if (!wantsMark && !priv.active) {
+      void applyPrivate(false).catch((error: unknown) =>
+        logger.caught(SCOPE, "翻回公开失败", error),
+      );
+      return;
+    }
+    // 两个方向都要"这一张开着"：标记私密用它的钥匙封正文，翻公开先把真身读出写明文（读不出=公布空壳丢内容）。
+    // 已开着那张走 gate 短路：当场办完、不打断、不问"立即锁回去"（这路没输密码）；只有标记成私密才按设置问。
+    void requirePrivateUnlock({
+      noteId: id,
+      purpose: "reveal",
+      action: () => applyPrivate(wantsMark),
+      after: wantsMark
+        ? async () => {
+            const mode = lockAfterMark();
+            if (mode === "now") {
+              await lockNow();
+            } else if (mode === "ask") {
+              armLockConfirm();
+            }
+          }
+        : undefined,
+      what: wantsMark ? "把这张标记成私密" : "把这张翻回公开",
+    }).catch((error: unknown) => logger.caught(SCOPE, "开口令窗失败", error));
+  }, [applyPrivate, armLockConfirm, id, lockNow, note.private, priv.active]);
+
+  // —— 右键菜单 ——（命中什么给什么，判定在 note-menu.ts 纯函数；叠窗也照给，只是没"收起"那档）
   const [menu, setMenu] = useState<{
     x: number;
     y: number;
@@ -264,10 +323,7 @@ export function NoteContent({
     /** null = 目标是正文 */
     row: RowRef | null;
   } | null>(null);
-  /**
-   * 右键那一下落在哪一条（"加一张图"要用）。选文件是异步的，回来时菜单早关了，
-   * 所以这个目标要单独记住，不能等用时再读 `menu`。
-   */
+  /** 右键落在哪一条（"加一张图"要用）：选文件是异步的，回来时菜单早关了，得单独记住、不能用时再读 `menu`。 */
   const imageRowRef = useRef<RowRef | null>(null);
   /** 地址被拒的那句话，写在那一小块输入框下面（它还在问，回执就得还在旁边） */
   const [linkError, setLinkError] = useState<string | null>(null);
@@ -281,10 +337,8 @@ export function NoteContent({
   /** 这句引用在正文里，才给"删掉这张图"（条目里的引用不在 body 上） */
   const bodyHas = (mediaId: string): boolean => note.body.includes(`media://${mediaId}`);
 
-  /**
-   * 选中的那几个字落在正文的哪一段。只有一条路：读 `rich-text` 画纯文本时留在 DOM 上的
-   * `data-start` / `data-end`（见 `selection-range.ts` 为什么不能拿渲染后的字数反推）。
-   */
+  /** 选中落在正文哪一段，只有一条路：读 rich-text 画纯文本时留在 DOM 上的 data-start/data-end
+   *  （见 selection-range.ts 为何不能拿渲染后字数反推）。 */
   const selectedRange = (
     root: Element,
     selection: Selection | null,
@@ -323,16 +377,9 @@ export function NoteContent({
     });
   };
 
-  /**
-   * 这一记右键归谁。true = 我们的菜单（调用方要 `preventDefault`），false = 交回系统菜单。
-   * 判在 target 上：标题框与清单/时间轴每条那个 input 照旧走原生（那儿的粘贴/拼写
-   * 我们给不了，也没必要给）。正文那块 textarea **一律接管**（作者要了第二次）：
-   * 没选区时菜单里就只剩「全选」+ `note-menu.ts` 里那串通用项（条数别在这里抄，
-   * 那边加一条这边就过期），粘贴请继续用 Ctrl+V。
-   *
-   * 入参写成结构而不是 `ReactMouseEvent`：同一段判据既要从 React 的 `contextmenu`
-   * 走，也要从窗口上那拍更早的 `pointerup` 走（见下面 `poppedOnRef` 那条注释）。
-   */
+  /** 这一记右键归谁：true=我们的菜单（调用方 preventDefault），false=交回系统。
+   *  判在 target：标题/清单/时间轴的 input 走原生（粘贴拼写给不了也不必给），正文 textarea 一律接管；
+   *  没选区时只剩「全选」+note-menu.ts 通用项（别在这抄条数）。入参写成结构而非 ReactMouseEvent，因同一判据要从 contextmenu 和更早的 pointerup 两处走。 */
   const takeOverContext = (event: {
     target: EventTarget | null;
     currentTarget: Element;
@@ -392,26 +439,24 @@ export function NoteContent({
     return true;
   };
 
-  /**
-   * `pointerup` 那一拍（比 `mouseup` 还早，更早于 `contextmenu`）就把菜单弹出来，
-   * 记下的坐标用来让随后那个 `contextmenu` 只挡系统菜单、不再重弹一次。
-   * **为什么不等到 `contextmenu`**：可编辑区里 Chromium 要先把**它自己的**菜单准备好
-   * 才派发那个事件，作者量的"有延迟"就是那一段——我们这侧从事件到菜单出现只有 0.4ms
-   * （4920 字正文里同步画完），所以能做的就是把弹菜单挪到那段等待之前。
-   *
-   * 挂在 window 的 capture 上而不是写成 JSX 的 `onMouseUp`：a11y 规则不许在普通 div
-   * 上挂鼠标处理器（这层壳是正文 + 页脚的容器，不是按钮），而 `ContextMenu` 关自己
-   * 走的也是同一条 capture 监听。
-   */
+  /** `pointerup`（比 mouseup/contextmenu 都早）就弹菜单；记坐标让随后的 contextmenu 只挡系统菜单不重弹。
+   *  为何不等 contextmenu：可编辑区里 Chromium 要先备好**它自己的**菜单才派发，那段等待就是延迟来源，所以把弹菜单挪到它之前。
+   *  挂 window capture 而非 JSX onMouseUp：a11y 规则不许在普通 div 挂鼠标处理器（这壳是正文+页脚容器不是按钮），ContextMenu 关自己也走同一条 capture。 */
   const shellRef = useRef<HTMLDivElement>(null);
   const poppedOnRef = useRef<{ x: number; y: number } | null>(null);
+  // `takeOverContext` 每渲染是一个新闭包（它要用这一拍的 props）。不隔一层 ref，
+  // 这个 effect 就只能每渲染重挂一次 window 上的 capture 监听——打字时那是白 churn
+  const takeOverContextRef = useRef(takeOverContext);
+  useEffect(() => {
+    takeOverContextRef.current = takeOverContext;
+  });
 
   useEffect(() => {
     const onPointerUp = (event: PointerEvent): void => {
       if (event.button !== 2) return;
       const shell = shellRef.current;
       if (shell === null || !shell.contains(event.target as Node)) return;
-      const taken = takeOverContext({
+      const taken = takeOverContextRef.current({
         target: event.target,
         currentTarget: shell,
         clientX: event.clientX,
@@ -421,7 +466,7 @@ export function NoteContent({
     };
     window.addEventListener("pointerup", onPointerUp, true);
     return () => window.removeEventListener("pointerup", onPointerUp, true);
-  });
+  }, []);
 
   const onContextMenu = (event: ReactMouseEvent): void => {
     const popped = poppedOnRef.current;
@@ -443,12 +488,8 @@ export function NoteContent({
     }
   };
 
-  /**
-   * 剪切选中：**先复制，复制成了才删**。
-   * 反过来做的话，系统不给剪贴板那一下用户的字就凭空少了几个——而这正是这一档菜单
-   * 里没有"粘贴"的同一个理由（`clipboard-read` 在 WebView2 上不稳，作者拍板不引插件）。
-   * 失败就原样留着并说清。
-   */
+  /** 剪切选中：**先复制、复制成了才删**——反过来做，系统不给剪贴板那下用户的字就凭空少了几个。
+   *  失败就原样留着并说清。（这也是本菜单没"粘贴"的原因：clipboard-read 在 WebView2 不稳，不引插件。） */
   const cutSelection = async (range: { start: number; end: number }): Promise<void> => {
     const text = note.body.slice(range.start, range.end);
     try {
@@ -500,9 +541,7 @@ export function NoteContent({
         bodyRef.current?.focus();
         break;
       case "add-link": {
-        // 菜单先收掉，就地接着弹那一小块填地址的 —— 手指不用在两个东西之间跳。
-        // 三种目标都走这一个口：阅读态正文（区间来自 DOM 上留的 data-start）、
-        // 编辑态正文（textarea 的 selectionStart/End）、清单/时间轴那一条（那条自己的区间）
+        // 菜单先收、就地弹那一小块填地址的（手指不用在两个东西间跳）；正文/编辑态/条目三种目标都走这一个口
         if (anchor === null) break;
         if (hit?.kind === "editor") {
           setLinkDraft({
@@ -532,8 +571,7 @@ export function NoteContent({
         break;
       }
       case "copy-body": {
-        // 复制的是**这一块文本**，四类便签存在不同字段里（见 plainBody）。
-        // 回执直接跟着菜单上那句走："已复制清单 / 已复制时间轴 / 已复制正文"
+        // 复制的是**这一块文本**，四类便签存在不同字段里（见 plainBody）；回执跟着菜单上那句走
         const text = plainBody(note);
         const label = bodyActionLabel(note);
         void copy(text, text === "" ? "这块还是空的" : `已${label}`);
@@ -583,8 +621,7 @@ export function NoteContent({
   const applyLink = (url: string): void => {
     const draft = linkDraft;
     if (draft === null) return;
-    // 目标是清单/时间轴那一条时，上限按条目算（200）：一句图引用就占 ~28 字，
-    // 正文那 5000 的余量在一条里是不存在的
+    // 目标是清单/时间轴那一条时上限按条目算（200）——正文那 5000 的余量在一条里不存在
     const target = draft.row === null ? note.body : rowText(note, draft.row);
     if (target === null) return;
     const result = wrapLink(
@@ -595,8 +632,7 @@ export function NoteContent({
       draft.row === null ? BODY_MAX : ITEM_MAX,
     );
     if (!result.ok) {
-      // **不关**：地址不对是他还没打完，关掉等于把他打的两个字清掉、从头再来一遍。
-      // 理由也只写在这一小块上——它在问地址，回执跑到正文底下就看不见
+      // **不关**：地址不对是他还没打完，关掉等于清掉他打的字重来；理由也只写在这小块上（回执跑到正文底下就看不见）
       setLinkError(result.reason);
       return;
     }
@@ -624,8 +660,10 @@ export function NoteContent({
     <span
       className="shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium"
       style={{
-        backgroundColor: dueUrgent ? theme.accent : "rgba(0,0,0,0.06)",
-        color: dueUrgent ? "#fff" : theme.ink,
+        // 强调色只当底色与描边用，字一律走 ink：浅色档的 accent 压白字实测 3.2–4.2:1（AA 要 4.5）
+        backgroundColor: dueUrgent ? `${theme.accent}26` : "rgba(0,0,0,0.06)",
+        color: theme.ink,
+        border: dueUrgent ? `1px solid ${theme.accent}` : "1px solid transparent",
       }}
     >
       {due.text}
@@ -636,20 +674,17 @@ export function NoteContent({
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3">
         <Lock size={22} aria-hidden style={{ color: theme.accent }} />
-        <p className="text-xs font-medium" style={{ color: theme.ink }}>
-          已锁定 · 私密便签
-        </p>
         <button
           type="button"
           onClick={() =>
-            void openUnlockWindow().catch((error: unknown) =>
+            void openUnlockWindow(id, "reveal").catch((error: unknown) =>
               logger.caught(SCOPE, "开口令窗失败", error),
             )
           }
-          className="rounded-md px-4 py-1.5 text-xs font-medium transition-opacity hover:opacity-80"
-          style={{ backgroundColor: theme.accent, color: theme.paper }}
+          className="rounded-md border px-4 py-1.5 text-xs font-medium transition-opacity hover:opacity-80"
+          style={{ borderColor: theme.accent, color: theme.ink }}
         >
-          解锁
+          输入密码
         </button>
         <div className="mt-2 flex items-center gap-1">
           <button
@@ -672,11 +707,7 @@ export function NoteContent({
       ref={shellRef}
       className="flex h-full flex-col gap-1.5 p-3"
       onContextMenu={onContextMenu}
-      /*
-       * 滚动条跟着这张纸的颜色走：两个变量写在根上，这一屏所有滚容器共用
-       * （读它们的是 index.css 里那段 ::-webkit-scrollbar）。写在这里而不是各滚
-       * 容器各配一份，是因为"这张纸是什么色"只有一个来源——themeColors 那一次算。
-       */
+      /* 滚动条跟着这张纸的颜色走：两个变量写在根上、本屏所有滚容器共用（读它们的是 index.css 的 ::-webkit-scrollbar）；只写这一处是因"这张纸什么色"只有 themeColors 一个来源 */
       style={
         {
           "--nb-ink": theme.ink,
@@ -742,7 +773,7 @@ export function NoteContent({
       <input
         aria-label="便签标题"
         value={note.title}
-        maxLength={40}
+        maxLength={TITLE_MAX}
         placeholder="标题"
         onChange={(event) => updateNote(id, { title: event.target.value })}
         className="shrink-0 bg-transparent text-sm font-semibold"
@@ -780,8 +811,7 @@ export function NoteContent({
               onChange={(patch) => updateNote(id, patch)}
             />
           )}
-          {/* 正文：阅读态画识别结果，编辑态是 textarea。拖图两态都收（外面这层壳
-              就是为这个存在的——只挂在 textarea 上的话，看着图想拖一张进来反而拖不进） */}
+          {/* 正文两态（阅读/编辑）。拖图两态都收：外面这层壳就是为这个存在——只挂 textarea 上的话看着图想拖进来反而拖不进 */}
           <div
             className="flex min-h-0 flex-1 flex-col"
             onDragOver={(event) => {
@@ -817,8 +847,7 @@ export function NoteContent({
                 onPaste={(event) => {
                   const files = [...event.clipboardData.files];
                   if (files.some((file) => isAcceptedMime(file.type))) {
-                    // 剪贴板里有图就按图办：不拦的话浏览器粘进来的是文件名或一串
-                    // 指向本机的路径，看着像粘成功了，其实什么图都没有
+                    // 剪贴板里有图就按图办：不拦的话浏览器粘进来的是文件名或本机路径，看着像成功其实什么图都没有
                     event.preventDefault();
                     void attachToBody(files);
                   }
@@ -856,17 +885,13 @@ export function NoteContent({
           className="shrink-0 rounded px-2 py-1 text-[11px]"
           style={{ backgroundColor: "#FEE2E2", color: "#991B1B" }}
         >
-          有改动还没写进磁盘，会自动重试
+          有改动还没写进磁盘：会自己退避重试；这张还没揭开的那一笔，揭开后自动补做
         </div>
       )}
 
-      {/* 页脚分两行，各管各的：
-          上 = 这张纸的元信息（归组槽 / 标签 / 字数），标签能有好几个，这一行**允许换行**；
-          下 = 窗级动作那一排按钮，**单独一行、不换行**。
-          以前两拨挤在一排 `flex-wrap` 里：预览台量过，连默认的 318 宽都摆不下，
-          按钮被折到两三条线上（5 个 top、~50px 高），作者要的就是这个"按钮单独一列"。
-          不换行不等于塞得下——窄窗下真溢出就是"最后一枚按钮按不到"（M6 当初加 flex-wrap
-          正是为了它），所以这一行的宽度在预览台按 220 / 318 / 520 三档量过。 */}
+      {/* 页脚分两行：上=这张纸的元信息（归组槽/标签/字数，标签可能好几个，**允许换行**）；
+          下=窗级动作那一排按钮，**单独一行不换行**。
+          不换行不等于塞得下——窄窗真溢出就是"最后一枚按钮按不到"，这一行宽度在预览台按 220/318/520 三档量过。 */}
       <div className="flex shrink-0 flex-col gap-1">
         <div className="flex min-w-0 flex-wrap items-center gap-1">
           {leadingActions}
@@ -895,7 +920,7 @@ export function NoteContent({
           <input
             aria-label="添加标签"
             placeholder="+ 标签"
-            maxLength={20}
+            maxLength={TAG_MAX}
             className="w-16 rounded-full bg-black/5 px-2 py-0.5 text-[10px] placeholder:text-black/30"
             style={{ color: theme.ink }}
             onKeyDown={(event) => {
@@ -918,8 +943,7 @@ export function NoteContent({
         </div>
 
         <div className="flex items-center gap-1">
-          {/* 加图。走 webview 自己的文件框，不需要 fs/dialog 插件：拿到的就是 File 对象，
-            字节随后由 media_save 落库 */}
+          {/* 加图。走 webview 自己的文件框，不需要 fs/dialog 插件：拿到的就是 File 对象，字节随后由 media_save 落库 */}
           <button
             type="button"
             aria-label="加一张图（也可以直接粘贴或拖进来）"
@@ -943,7 +967,6 @@ export function NoteContent({
               event.target.value = "";
               const row = imageRowRef.current;
               imageRowRef.current = null;
-              // 右键落在哪一条就加进那一条；菜单早关了，靠的是 imageRowRef 那份记号
               if (row !== null) void attachToRow(row, files);
               else void attachToBody(files);
             }}
@@ -962,9 +985,8 @@ export function NoteContent({
               <Minimize2 size={14} aria-hidden />
             )}
           </button>
-          <IconPicker id={id} note={note} masked={masked} />
-          {/* 历史版本的常驻入口（右键菜单里那一条也在）。不分私密：
-              私密的版本住封套，锁着读不到，面板自己会说 */}
+          <IconPicker id={id} note={note} />
+          {/* 历史版本常驻入口（右键那条也在）。不分私密：私密版本住封套、锁着读不到，面板自己会说 */}
           <button
             type="button"
             aria-label="历史版本"
@@ -975,6 +997,44 @@ export function NoteContent({
           >
             <History size={14} aria-hidden />
           </button>
+          {/* 收回与密级是两件事，所以是两颗钮：这颗只管"把揭开的那几张蒙回"，
+              旁边那颗只管翻这张的密级。设过口令才有得收回，没设过就不给这颗钮 */}
+          {note.private && priv.active && (
+            <>
+              {lockConfirm && (
+                <span className="text-[11px]" style={{ color: theme.ink }}>
+                  立即锁定？
+                </span>
+              )}
+              <button
+                type="button"
+                aria-label="立即锁定"
+                title={
+                  lockConfirm
+                    ? "点一下就把揭开的那几张一起蒙回（5 秒内不点就保持开着）"
+                    : "立即锁定：把揭开的那几张一起蒙回"
+                }
+                onClick={() => {
+                  if (lockConfirmTimer.current !== null)
+                    clearTimeout(lockConfirmTimer.current);
+                  setLockConfirm(false);
+                  void lockNow();
+                }}
+                className="rounded p-1 transition-colors hover:bg-black/10"
+                style={
+                  lockConfirm
+                    ? {
+                        color: theme.ink,
+                        backgroundColor: theme.accent,
+                        borderRadius: "99px",
+                      }
+                    : { color: theme.accent }
+                }
+              >
+                <EyeOff size={14} aria-hidden />
+              </button>
+            </>
+          )}
           <button
             type="button"
             aria-label={note.private ? "取消私密" : "标记私密"}
@@ -1025,7 +1085,6 @@ export function NoteContent({
       {historyOpen && (
         <HistoryPanel
           noteId={id}
-          isPrivate={note.private}
           ink={theme.ink}
           accent={theme.accent}
           onClose={() => setHistoryOpen(false)}

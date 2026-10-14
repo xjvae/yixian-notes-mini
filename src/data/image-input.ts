@@ -4,9 +4,14 @@
 //  · **只收白名单 mime**（与 Rust 侧 `media::ALLOWED_MIME` 同表同序）：svg 是文本格式、
 //    能带脚本，不收；
 //  · **缩到最长边 MAX_EDGE**：一张 4K 截图原图 8~20 MB，原样进库就是"贴一张图库涨
-//    20 MB"，而便签里那块图撑死也就 320 宽上下——2560 已经留足了放大与换高分屏的余地；
+//    20 MB"。边长这一格是拿"贴一张卡多久"换的：画布、`getImageData`、重编码、base64
+//    全按**像素数**走，2560→1600 是像素 ÷2.56，而便签里那块图撑死 320 逻辑像素宽
+//    （3 倍屏也才 960），1600 仍留着放大的余地；
 //  · **重编码**：不透明走 jpeg(0.9)、带透明走 png。截图基本不透明，这一条把
 //    "一张 4K 图" 从 6 MB 量级压到 1 MB 以内，是这条链路存在的理由。
+//
+// 原图字节**只在要透传时才读**：png/jpeg/webp 走画布重编码，那份 `arrayBuffer()` 是白读
+// 一份 5–25 MB 的拷贝（这是"贴一张图卡半秒"的另一半来源）。
 //
 // 为什么在前端做而不是 Rust：前端有 canvas，Rust 侧要重编码就得引 image crate
 // （多一个依赖面）。字节最终仍由 Rust 校验并落库，一条口径都没绕过。
@@ -20,8 +25,11 @@ export const MAX_BYTES = 5 * 1024 * 1024;
 /** 进来的原图上限。防的是"误拖进一个 300 MB 的文件"，不是拦正常截图 */
 export const MAX_INPUT_BYTES = 25 * 1024 * 1024;
 
-/** 缩到最长边多少像素 */
-export const MAX_EDGE = 2560;
+/** 缩到最长边多少像素（换速度这件事的理由见文件头） */
+export const MAX_EDGE = 1600;
+
+/** 透明检测每几个像素取一个。逐像素扫一张 1600×1600 要摸 256 万个字节，而结论只有两个 */
+const ALPHA_SAMPLE_STRIDE = 3;
 
 /** 与 src-tauri/src/db/query/media.rs 的 ALLOWED_MIME 同表同序（改一边要同步另一边） */
 export const ALLOWED_MIME: readonly string[] = [
@@ -75,13 +83,16 @@ export function targetSize(
   };
 }
 
-/** 画布里有没有真透明像素。全不透明就能走 jpeg（小一个量级） */
+/** 画布里有没有真透明像素。全不透明就能走 jpeg（小一个量级）。
+ *  隔 `ALPHA_SAMPLE_STRIDE` 个像素取一个：截图上真有透明就一定是一大片（窗口圆角、
+ *  阴影、抠出来的图标），取样的漏检形状是"整张只有孤立几个像素透明"——那种图看不出差别 */
 function hasAlpha(source: HTMLCanvasElement): boolean {
   const data = source
     .getContext("2d")
     ?.getImageData(0, 0, source.width, source.height).data;
   if (data === undefined) return true; // 拿不到就当有透明，走 png 这条安全的路
-  for (let i = 3; i < data.length; i += 4) {
+  const step = 4 * ALPHA_SAMPLE_STRIDE;
+  for (let i = 3; i < data.length; i += step) {
     if (data[i] !== 255) return true;
   }
   return false;
@@ -111,11 +122,11 @@ export async function prepareImage(file: File): Promise<PreparedImage> {
   if (file.size > MAX_INPUT_BYTES) {
     throw new Error(`这张图 ${(file.size / 1048576).toFixed(1)} MB，太大了`);
   }
-  const raw = new Uint8Array(await file.arrayBuffer());
   const bitmap = await createImageBitmap(file);
 
   if (!RECODEABLE.has(file.type)) {
-    // 透传：动图不能被压成一张静图，bmp 也没必要转
+    // 透传：动图不能被压成一张静图，bmp 也没必要转。原图字节**只在这一支才读**
+    const raw = new Uint8Array(await file.arrayBuffer());
     if (raw.length > MAX_BYTES) {
       throw new Error(
         `${file.type === "image/gif" ? "这张动图" : "这张图"} ${(raw.length / 1048576).toFixed(1)} MB，超过单张 5 MB 上限`,

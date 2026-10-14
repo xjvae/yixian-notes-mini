@@ -1,19 +1,7 @@
-// 引导气泡 —— 一扇小窗，一步一停，指着真东西说话。
-//
-// 形状：320×168 的无边框透明置顶窗（`windows/guide.rs`），里面就是一张卡片 + 一枚指向箭头。
-// **不遮罩**，所以引导期间桌面上那张便签照样能点、能拖——拍定这条的理由：遮罩一盖就成了
-// "看着教程不能跟着做"，而 Tauri 的点击穿透是整窗开关（`set_ignore_cursor_events` 没有
-// 区域粒度），做不出"遮罩上挖一个能点的洞"。
-//
-// 每步换两样：卡片内容 + **这扇窗自己的位置**。位置由这里算（工作区与真便签的矩形都问得到），
-// 算完调 `setWindowFrame` 把自己搬过去：
-//  · 第一步（长按）没有可指的东西，落在屏幕正中——那正是盘将要出现的地方；
-//  · 讲某张便签的那几步摆在那张的右边（放不下换左边、再不行下边），箭头指回去，
-//    并且**每 120 毫秒回头看它一眼**：他正把那张拖着走（贴到边上收成细丝也照跟）；
-//  · 托盘那步贴到**那一格本身**头上：图标归 Explorer 所有、没有句柄，Win32 拿不到它的矩形，
-//    Rust 那侧走 UI Automation 问（`tray.rs::icon_rect`）。问不到（被收进溢出面板等）才退
-//    屏幕右下角，那时正文也只能说"屏幕右下角的托盘"。
-//
+// 引导气泡 — 320×168 无边框透明置顶小窗（`windows/guide.rs`），一步一停，卡片+箭头指着真东西。
+// **不遮罩**：Tauri 的点击穿透是整窗开关（`set_ignore_cursor_events` 没有区域粒度），
+// 做不出"遮罩上挖一个能点的洞"，所以引导期间桌面上那张便签照样能点、能拖。
+// 每步换两样：卡片内容 + **这扇窗自己的位置**（`spotFor` 问几何、`setWindowFrame` 把自己搬过去）。
 // 关 = 销毁，下次开都从第一步起；销账在 Rust 那条 close 命令里做。
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { currentWindow, listen, setWindowFrame } from "@/platform/bridge";
@@ -31,8 +19,7 @@ import {
 import { logger } from "@/platform/logger";
 import { GUIDE_STEPS, type Anchor, type GuideFacts } from "@/features/guide/steps";
 
-/** 与 `windows/guide.rs` 的 BUBBLE_SIZE 同值（逻辑像素）：那是**出生高，也是下限**。
- * 三行文案在 168 里放不下（量到过：内容要 170），所以卡片挂载后按实测高把这扇窗往下长 */
+/** 与 `windows/guide.rs` 的 BUBBLE_SIZE 同值（逻辑像素）：出生高，也是下限；三行文案放不下时按实测高往下长（见量高 effect） */
 const BUBBLE = { w: 320, h: 168 };
 /** 卡片到窗边的内缩，与 `index.css` 的 `.g-bubble { inset: 6px }` 同值 */
 const INSET = 6;
@@ -42,9 +29,9 @@ const GAP = 14;
 const EDGE = 8;
 /** 等"那张纸落下来"时问浮窗表的间隔（毫秒）。只有第三步挂着，落成就停 */
 const LOOK_MS = 300;
-/** 指着便签的那几步回头看它一眼的间隔（毫秒）：他拖着那张走时，气泡跟得上就行 */
+/** 指着便签的那几步的回头看间隔（毫秒）：他拖着那张走时气泡要跟得上 */
 const FOLLOW_MS = 120;
-/** 哪些锚点要跟着走：只有指着便签那一种。环不会动，卡与托盘的位置也不会 */
+/** 哪些锚点要跟着走：只有指着便签那一种。环与卡、托盘的位置都不会动 */
 const TRACKED: ReadonlySet<Anchor["kind"]> = new Set<Anchor["kind"]>(["note"]);
 
 /** `guide_show_ring` 的回报：屏幕上那只环的真实中心与半径（逻辑像素） */
@@ -61,9 +48,8 @@ interface Spot {
   y: number;
   dir: Dir;
   /**
-   * 箭头离气泡左边的距离（逻辑像素）。只有托盘那一格用得上：图标贴着屏幕边时，
-   * 气泡被 `fit` 夹回来就不再以它为中轴 —— 不补这个偏移，箭头指的就是一块空地方，
-   * 而"指着真东西"正是这版设计唯一的存在理由。没给就按 CSS 的居中走。
+   * 箭头离气泡左边的距离（逻辑像素），只有托盘那格用得上：图标贴屏幕边时气泡被 `fit`
+   * 夹回来就不再以它为中轴，不补这个偏移箭头指的就是空地。没给就按 CSS 的居中走。
    */
   arrowX?: number;
 }
@@ -94,15 +80,9 @@ function fit(area: Area, x: number, y: number, h: number): { x: number; y: numbe
 }
 
 /**
- * 这一步摆在哪（窗左上角，逻辑像素）。
- *
- * 问到的几何都是**物理像素**（`monitor_work_area` 与 `float_frames` 两条命令的口径），
- * 而 `setWindowFrame` 吃逻辑像素，所以先除以缩放系数再算。
- * `taught` 是这一步教出来的那张便签的窗 label（第三步等来的），知道就摆到它身上。
- * `h` 是这一屏内容实测要的窗高（下限 168）：三行那几步在 168 里放不下，
- * 底下那截会被窗矩形裁掉（透明窗把矩形以外全裁走），裁掉的正好是「知道了」那颗钮。
- * 任何一处问不到（拿不到显示器、桌面上没有浮窗）都退回屏幕正中——气泡摆错位置只是不贴切，
- * 摆不出来是"引导打不开"，那严重得多。
+ * 这一步摆在哪（窗左上角，逻辑像素）。`monitor_work_area`/`float_frames` 报的是**物理像素**，
+ * 而 `setWindowFrame` 吃逻辑像素，先除缩放系数再算；`taught` 是这一步教出来的那张便签的窗 label。
+ * 任何一处问不到都退回屏幕正中：摆错位置只是不贴切，摆不出来是"引导打不开"，那严重得多。
  */
 async function spotFor(
   anchor: Anchor,
@@ -129,25 +109,22 @@ async function spotFor(
     case "top":
       return { ...fit(wa, wa.x + (wa.w - BUBBLE.w) / 2, wa.y + 10, h), dir: "down" };
     case "ring":
-      // 贴到那只**真环**的右边，箭头指回去。中心与半径都是 Rust 读窗的实际外框给的，
-      // 不在这儿猜。拿不到（没显示器信息）就退回正中——宁可气泡不贴，也别摆不出来
+      // 中心与半径都是 Rust 读窗的实际外框给的，不在这儿猜；拿不到就退回正中
       if (ring === undefined) return mid;
       return {
         ...fit(
           wa,
           ring.cx + ring.half + GAP,
-          // 指上面那一格时竖直偏上：环心往上 0.55 个半径，落在那格与中心之间。
-          // 这是**近似**——盘上格子的真实半径前端算得出（SVG 那份），但跨语言再抄一份
-          // 数值更容易漂，气泡贴到盘的上半部已经足够指对东西
+          // 0.55 是**近似**：格子真实半径前端算得出（SVG 那份），但跨语言再抄一份数值容易漂，
+          // 气泡贴到盘的上半部已经足够指对东西
           anchor.cell === "top" ? ring.cy - ring.half * 0.55 - h / 2 : ring.cy - h / 2,
           h,
         ),
         dir: "left",
       };
     case "tray": {
-      // 问到那一格就贴到它头上、箭头朝下指着它。图标归 Explorer 所有，只有 UIA 报得出矩形
-      //（`tray.rs::icon_rect`）；问不到——被收进溢出面板、别的 shell、COM 起不来——
-      // 才退"工作区右下角"那一档，这时候正文说的也只能是"屏幕右下角的托盘"
+      // 图标归 Explorer 所有、没有句柄，只有 UIA 报得出矩形（`tray.rs::icon_rect`）；
+      // 问不到（被收进溢出面板等）才退工作区右下角
       const rect = await trayRect().catch(() => null);
       if (rect !== null && rect.width > 0) {
         const ix = px(rect.x);
@@ -169,20 +146,15 @@ async function spotFor(
     }
     case "note": {
       const frames = await floatFrames().catch(() => []);
-      // `float_frames` 那侧是遍历 webview 的 map 出来的，**顺序不固定**：不排一下，
-      // 每次取到的可能是不同的便签，看上去就是气泡忽左忽右。按 label 从新到旧——
-      // id 是 `s` + 十六进制毫秒 + 序号，比 label 就是比创建先后。
-      // 上一版取的是 label **最小**（=最老）的那张，所以他刚新建的那张明明在眼前，
-      // 气泡却摆到了别的纸上，报的就是这一条
+      // `float_frames` 是遍历 webview 的 map 出来的，**顺序不固定**，必须排序：
+      // id 是 `s` + 十六进制毫秒 + 序号，按 label 从新到旧排就是按创建先后排
       const byNewLabel = (a: { label: string }, b: { label: string }): number =>
         b.label.localeCompare(a.label);
       const newestFirst = [...frames].sort(byNewLabel);
-      // **教出来的那一张在哪一档形态里都算**：贴边收成 20 宽细丝、收起成 62 高的栏，
-      // 它还是那一张——第六步讲的正是"拖到边上"，气泡要跟着它一路贴过去
+      // **教出来的那一张在哪一档形态里都算**：贴边收成细丝、收起成栏还是它，气泡要一路跟着
       const taughtFrame =
         taught === null ? undefined : newestFirst.find((f) => f.label === taught);
-      // 只有"不知道是哪一张"时才挑正常大小的那张：气泡贴着一根来路不明的细丝讲事情，
-      // 看着就是摆错了地方
+      // 只有"不知道是哪一张"时才挑正常大小的：贴着来路不明的细丝讲事情，看着就是摆错了地方
       const roomy = newestFirst.filter((f) => f.width >= 100 && f.height >= 100);
       const target = taughtFrame ?? roomy[0] ?? newestFirst[0];
       if (target === undefined) return mid;
@@ -249,9 +221,8 @@ export function GuideBubble() {
         holdMs: hook.holdMs,
         hookPaused: hook.paused,
         hotkeys,
-        // 私密层那一步要说"标了立刻加密"还是"你还没设口令，标了也不加密"，靠这两条
         privateConfigured: vault?.configured === true,
-        privateUnlocked: vault?.unlocked === true,
+        revealedCount: vault?.revealed.length ?? 0,
       });
     })();
   }, []);
@@ -259,12 +230,9 @@ export function GuideBubble() {
   const lines = typeof step.lines === "function" ? step.lines(facts) : step.lines;
 
   // 演示便签：讲便签的那几步**必须有"这张"**，并叠那一步还必须有"另一张"。
-  // ① 他自己按第三步建出来的那张优先（`taught` 就是它），有了就不建；
-  // ② 没有就建 —— **哪怕他桌上本来就开着别的纸也建**：那几步说的是"这张"，
-  //    把它指到一张来路不明的旧纸上，讲换类讲长高都不对号（上一版正是这条，
-  //    他报"第四步未出现新建便签"）；
-  // ③ 并叠要两张：除了"这张"以外一张都不剩时才补第二张，正文里明说是引导放的。
-  // 每种只试一次，失败不每步重试；建出来的那几张由 `close_guide_window` 硬删。
+  // 他自己建出来的那张（`taught`）优先，没有就建——**哪怕桌上本来就开着别的纸也建**：
+  // 那几步说的是"这张"，指到来路不明的旧纸上讲换类讲长高都不对号。
+  // 并叠要两张：除"这张"外一张都不剩时才补。每种只试一次；建出来的由 `close_guide_window` 硬删。
   useEffect(() => {
     if (step.anchor.kind !== "note") return;
     const need = step.demoNeeds ?? 1;
@@ -315,22 +283,17 @@ export function GuideBubble() {
     }
   }, [step, taught]);
 
-  // 最新那份搬窗闭包（给"每次渲染后重量一次高"用，免得为了触发重算往 place 里塞假依赖）。
-  // 晚一渲染同步也不要紧：量高那条只在这一屏**真的换档**时才搬窗，而那一下要么这一步的
-  // 搬窗效应本来就会跑，要么被 seq 那个序号挡回去（旧那趟算完发现自己已经不是最新的，直接不写）
+  // 最新那份 place（给量高 effect 用，免得为触发重算往 place 里塞假依赖）。
+  // 晚一拍同步不要紧：量高只在真换档时搬窗，那一趟要么本来就会跑，要么被 seq 序号挡回
   const placeRef = useRef(place);
   useEffect(() => {
     placeRef.current = place;
   }, [place]);
 
-  // 量这一屏要多高：三行文案在 168 里装不下（实测内容 170），而透明窗把窗矩形以外全裁走——
-  // 被裁掉的正好是最后一行和「知道了」那颗钮，等于看完最后一步却没法收尾。
-  // 内容高 = scrollHeight（含内边距、不含描边），加回来的必须是"窗边到内容边"的全部厚度：
-  // 上下各 6 的内缩 + 卡片那一圈描边。描边从 computed style 读而不写死，CSS 改了这里跟着变
-  //（第一版按 12 算，实测就少了 2 像素描边，正好裁掉按钮下半截）。
-  // **不写依赖数组**：这一屏有几行、每行折几行、事实读到没读到，都只体现在卡片此刻的布局里，
-  // 而"事实"是异步读回来的（那一下 step 没换、内容换了）。真换档才写窗——place 自己会比
-  // 上一次的落点与高度，所以每渲染问一次不吵。宽度定死 320，高度是内容的固有量，一两趟收敛
+  // 量这一屏要多高：三行文案在 168 里装不下（实测内容要 170），透明窗把矩形以外全裁走——裁的正是最后一行和「知道了」钮。
+  // 高 = scrollHeight（含内边距不含描边）+ 窗边到内容边的全部厚度（内缩 + 描边）；描边从 computed style 读不写死。
+  // **不写依赖数组**：有几行、每行折几行、事实异步读到没读到，都只体现在卡片此刻的布局里（事实到那一下 step 没换）。
+  // place 自己会比上次落点与高度，真换档才写窗，每渲染问一次不吵
   useLayoutEffect(() => {
     const card = cardRef.current;
     if (card === null) return;
@@ -373,10 +336,8 @@ export function GuideBubble() {
     };
   }, [step, place]);
 
-  // 指着便签的那几步要**跟着走**：他可能正把那张拖着走，或刚把它贴到边上。
-  // 系统拖着窗走的时候前端收不到 pointermove，别的窗的 moved 也不发给这一扇
-  // （`float_frames` 那条命令的头一段注释写的就是这事）——只能按一个不算快的间隔回头看它。
-  // 回头看的是同一趟 place：没挪地方就不写窗，所以这张表挂着一整步也不吵
+  // 指着便签的那几步要**跟着走**：系统拖着窗走时前端收不到 pointermove，别的窗的 moved 也不发给这一扇
+  // ——只能按一个不算快的间隔回头看它。回头走同一趟 place：没挪地方就不写窗，表挂一整步也不吵
   useEffect(() => {
     if (!TRACKED.has(step.anchor.kind)) return;
     const timer = window.setInterval(() => void place(), FOLLOW_MS);
@@ -392,12 +353,9 @@ export function GuideBubble() {
     })();
   }, []);
 
-  // 有两步不靠点「下一步」推进，而是等真事发生：
-  //  · 第一步等他真把盘按出来（Rust 每次开盘都广播 `ring:open`，不用我们去猜）；
-  //  · 第三步等那张纸真落到桌面上（浮窗表里冒出一扇开场没有的窗）。
-  // 第三条尤其要等**窗**而不是等库里的写：便签是先写库再开窗、且窗是隐藏建好等
-  // `float_reveal` 才亮的——只盯 `db:changed` 会把气泡搬到他还没看见的那张上。
-  // 监听只在该挂着的那一步挂着，翻过去就摘掉，所以兜底开环那一声不会反过来多推一页。
+  // 有两步不靠点「下一步」推进，而是等真事：第一步等 `ring:open`（Rust 每次开盘都广播，不用猜），第三步等窗落下。
+  // 第三步尤其要等**窗**而不是库里的写：便签先写库再开窗、窗是隐藏建好等 `float_reveal` 才亮——
+  // 只盯 `db:changed` 会把气泡搬到他还没看见的那张上。监听只在该挂着的那一步挂着，兜底开环不会多推一页
   useEffect(() => {
     const mode = step.advanceOn;
     if (mode === undefined) return;

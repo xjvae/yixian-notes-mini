@@ -1,9 +1,5 @@
 // WindowChrome — 所有窗口共用的外壳骨架：拖动条 + 把手 + 内容槽。
-// 从第一天就只有这一份标题条实现（旧架构五扇窗各写一份的债不再发生）。
-//
-// 纪律：
-//  · 拖动区只认 data-tauri-drag-region；把可点按钮放进拖动条时，按钮自己**不带**该属性，
-//    否则 mousedown 先触发拖动。
+//  · 拖动区只认 data-tauri-drag-region；把可点按钮放进拖动条时，按钮自己**不带**该属性，否则 mousedown 先触发拖动。
 //  · 视觉定制（便签纸面纹理、私密遮罩等）走 children 与插槽，不改这份骨架。
 //  · collapsed=true 时只渲染条：窗体本身已是 62px 高，内容槽不参与布局。
 
@@ -22,10 +18,8 @@ export interface WindowChromeProps {
    */
   ink?: string;
   /**
-   * 条上文字。**收起与展开两支都显示**：展开那句是只读的（改名仍走正文那一行输入框），
-   * 收起那句可以切成编辑框（给了 `onRename` 才有那颗钮）。
-   * 18 字截断由调用方做，空标题在这换成"未命名便签"。不给就没有这句（面板窗、叠窗
-   * 的组名住 `leading` 槽）。
+   * 条上文字。**收起与展开两支都显示**：展开那句只读（改名仍走正文那一行输入框），收起那句可切编辑框（给 `onRename` 才有那颗钮）。
+   * 不给就没有这句（面板窗、叠窗的组名住 `leading` 槽）；18 字截断由调用方做，空标题在这换成"未命名便签"。
    */
   title?: string;
   /**
@@ -54,10 +48,8 @@ export interface WindowChromeProps {
    */
   flash?: boolean;
   /**
-   * 给了才在收起态的条上多一颗「改标题」按钮。不给就是只读——面板窗没有标题这回事。
-   * **不能用双击标题做这件事**：标题那条 span 是 drag region，Windows 上双击 drag region
-   * 会最大化窗（见上面那颗按钮处的注释），最大化又会被贴边判定当成"拖到边上"。
-   * 提交时机：Enter 与失焦；Esc 不算。截断由调用方做，上限只有一处（`data/limit.ts`）。
+   * 给了才在收起态的条上多一颗「改标题」按钮，不给就是只读（面板窗没有标题这回事）。
+   * 不能用双击标题做——原因见渲染处那条注释。提交时机：Enter 与失焦；Esc 不算。截断与上限由调用方管。
    */
   onRename?: (next: string) => void;
   /** 标题输入框的硬顶，由调用方从 `TITLE_MAX` 传进来 */
@@ -130,14 +122,15 @@ export function WindowChrome({
     setRenaming(true);
   };
 
-  /**
-   * 条上那句标题。**收起与展开共用同一份**：展开态过去是空的拖动区，一张纸在桌面上
-   * 只有正文能认出是谁；正文那行输入框照旧在，所以这一句只读、不抢编辑。
-   */
+  /** 条上那句人话的字色：一律走这张纸/这块面板自己的墨色。强调色在浅色档上压小字
+   *  实测只有 3.2–4.2:1（AA 要 4.5），而标题、改名框都是 12px 的小字 */
+  const titleInk = ink ?? "var(--panel-ink)";
+
+  /** 条上那句标题，收起与展开共用：展开态一张纸在桌面上就靠它认是谁；只读，不抢正文那行输入框的编辑 */
   const titleSpan = (
     <span
       className="min-w-0 flex-1 truncate text-xs font-semibold"
-      style={{ color: accent }}
+      style={{ color: titleInk }}
       data-tauri-drag-region
     >
       {title?.trim() === "" ? "未命名便签" : title}
@@ -151,11 +144,7 @@ export function WindowChrome({
         backgroundColor: background,
         // 闪光那一圈用这扇窗自己的强调色（见 index.css 的 .sticky-ping）
         ["--ping-ink" as string]: accent,
-        // 轮廓由"这张纸自己的墨色"给，不给黑色半透明。黑色 10% 压在岩灰（#ECEEF1）
-        // 那种近白的纸上就是一条灰圈——作者报的"底色为白色时还能看到阴影"指的正是它；
-        // 换成墨色后，边是纸的一部分，浅纸深纸都只剩一点点收口。
-        // 那条 `shadow-[0_10px_30px_...]` 删了：预览台量过卡片 rect 与视口分毫不差
-        //（318×298 → rect 0,0,318,298），影子画在窗外被裁成 0 像素，留着只是让人怀疑它。
+        // 轮廓由这张纸自己的墨色给而不是黑色半透明：黑 10% 压在近白的纸上就是一条灰圈
         borderColor: `color-mix(in srgb, ${ink ?? "var(--panel-ink)"} 8%, transparent)`,
       }}
     >
@@ -187,17 +176,13 @@ export function WindowChrome({
                 onBlur={() => commitRename(onRename)}
                 // 编辑框**不带** data-tauri-drag-region：带了就成不了光标落点
                 className="min-w-0 flex-1 rounded bg-black/5 px-1 text-xs font-semibold outline-none"
-                style={{ color: accent }}
+                style={{ color: titleInk }}
               />
             ) : (
               titleSpan
             )}
             {badges}
-            {/* 改名走**按钮**而不是双击标题：Tauri 的 drag region 在 Windows 上
-                "mousedown 拖、双击最大化"（drag.js 里 e.detail 1 与 2 都触发），
-                而标题那条 span 就是这一栏最主要的手指落点——双击它等于把窗最大化，
-                最大化后的矩形四条边 gap 全是 0，贴边判定当场把这张签收走（真机报的
-                "双击后直接贴边了"）。BUTTON 不带该属性时按 drag.js 的规则不触发拖动 */}
+            {/* 改名必须走**按钮**不能双击标题：那条 span 是 drag region，Windows 上双击会最大化、最大化又被贴边判定当场收走；不带该属性的 BUTTON 不触发拖动 */}
             {onRename &&
               !editing &&
               iconButton("改标题", startRename, accent, <Pencil size={14} aria-hidden />)}
@@ -221,7 +206,7 @@ export function WindowChrome({
   );
 }
 
-/** 便签窗的 leading 槽：左缘色脊。类型标记随 M1 视图细化补齐 */
+/** 便签窗的 leading 槽：左缘色脊 */
 export function StickyLeading({ accent }: { accent: string }) {
   return <span className="h-4 w-1 rounded-full" style={{ backgroundColor: accent }} />;
 }

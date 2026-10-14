@@ -10,6 +10,8 @@ src-tauri/gen/
 
 # 逐轮工程记录：只留本地，不进仓库（里面全是这台机器的现场笔记与复盘）
 ROADMAP.md
+# ROADMAP 拆分前的全文（1186 行的验收记录与旧口径），留底不删
+ROADMAP.md.bak
 ARCHITECTURE.md
 
 # 安装向导素材的原料图与中间副本：只留本地。要进仓库的是成品——两张 24 位 BMP 在

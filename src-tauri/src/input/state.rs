@@ -1,33 +1,9 @@
-// input.state — 右键手势状态机的**纯**转移函数。
-//
-// 为什么单独一个文件：真实的转移函数跑在 WH_MOUSE_LL 回调里，那里禁止加锁、
-// 禁止日志、禁止跨进程调用（任何能向别的线程发消息的 Win32 调用都会把全系统
-// 输入链卡住），而且必须 ≤1ms。要测它就得插上鼠标、按住 450ms——没法测。
-// 把判定抽成 `(状态, 事件) → (新状态, 动作表)` 之后，用例就能穷尽所有分支。
-// 时间不在机器里：阈值到了由钩子层 SetTimer 发 `TimerFired`，机器只认事件。
-//
-// 语义：
-//   · 按下即刻吞掉 WM_RBUTTONDOWN（目标应用还没进入"右键按下"态，后面才有
-//     干净的补偿空间；"放行 down + 吞 up"会让应用的按钮态卡死）；
-//   · 按下时起**两个**计时：Hold（阈值）与 Charge（引导期 = 阈值 - 留尾）。
-//     充电弧在引导期走完才亮，不是到阈值才亮，也不是按下即亮——见下；
-//   · 按住到阈值只置 `Armed`，不出盘，也不再发任何东西——星环是松手那一瞬间出现的；
-//   · 松手：Armed → 在**按下点**出盘并吞掉 up（不弹系统菜单，也不发 EmitUp——
-//     盘接手时前端自己把弧下台，这里再发一条淡出等于让 90ms 定时器去收刚绽开的盘）；
-//     未 armed（短按）→ 吞掉 up、注入一对完整的 right down/up、让弧淡出；
-//   · 按住期间位移 > 6px（资源管理器框选等，Pressed 与 Armed 都算）→ 停表、补发一个
-//     right down 让应用进入按下态、让弧淡出，然后整体转成透传，后续事件原样放行；
-//   · 出盘坐标取**按下点快照**，不跟最新点：跟手会让"按住等盘"与"拖出去框选"
-//     抢同一个位移信号（旧实现按下点出盘 + 拖出即逃逸，是真机定稿）；
-//   · **move 一条都不吞**，只吞右键的 down 与 up：吞掉手势期间的移动 = 按住时指针
-//     冻住，而框选那条路又必须让位移抵达应用（它刚收到补发的 down）；
-//   · 自己注入的事件带 LLMHF_INJECTED，钩子层直接放行，防自反馈死循环。
-//
-// 为什么弧不早不晚要"贴阈值亮"：亮弧这条路要给 360×360 的顶层 webview 窗做
-// "摆位 + show + 设穿透 + 一次 IPC"。按下即亮（旧项目试过固定 120ms）的结果是
-// **整个右键都变慢，浏览器和桌面都一样**——"有意识地右键"的正常时长恰好落在
-// 150~250ms 这一带，于是每一次右键都付一次上述开销，还正压在系统上下文菜单要
-// 出现的那一瞬间。贴阈值亮之后：只有真在长按才碰窗口，普通右键一次都不碰。
+// input.state — 右键手势状态机的**纯**转移函数：(状态, 事件) → (新状态, 动作表)。
+// 单独成文件：真转移跑在 WH_MOUSE_LL 回调里（禁锁/禁日志/≤1ms，没法直接测），抽纯后用例能穷尽分支；
+// 时间不在机器里——阈值到点由钩子层发 TimerFired，机器只认事件。
+// 按下即吞 down（应用还没进按下态，后面才有干净的补偿空间；放 down 吞 up 会卡死按钮态），同时起 Hold+Charge 两计时；
+// 到阈值只置 Armed 不出盘，星环在松手那一瞬于**按下点快照**出现；短按松手补注入完整点击并让弧淡出；
+// 位移超阈转透传（停表、补发 down、后续放行）；长按松手只发 EmitOpen——那是盘接手，不是取消。
 
 /// 判定为"拖拽"的位移阈值。钩子坐标是物理像素，6px 在 200% 屏上只有 3 个逻辑
 /// 像素，仍然远小于一次有意的框选拖拽。
@@ -46,6 +22,7 @@ pub enum Phase {
     Passing = 3,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Event {
     RightDown { x: i32, y: i32 },
     RightUp,
@@ -68,9 +45,8 @@ pub enum Action {
     InjectFullClick,
     /// 拖拽转透传：补发一个 right down，让应用进入它错过的按下态
     InjectPress,
-    /// 引导期走完：星环窗**在按下点**亮起，前端画充电弧。
-    /// 坐标在这里一起给：窗口那条路要在真正的按下点上摆位，晚一步读都可能是
-    /// 已经被框选拖走的位置。
+    /// 引导期走完：星环窗**在按下点**亮起，前端画充电弧。坐标随事件一起给——
+    /// 晚一步读可能已是被框选拖走的位置。
     EmitCharging { x: i32, y: i32 },
     /// 弧淡出：短按松手 / 拖拽逃逸。**长按松手不发这条**（那条是盘接手，不是取消）
     EmitUp,
@@ -80,10 +56,8 @@ pub enum Action {
     Nop,
 }
 
-/// 动作表：定长内联，不带堆分配。
-///
-/// 这里不许用 Vec——`step()` 是在 WH_MOUSE_LL 回调里跑的，那一段坐在**全系统**
-/// 输入链上（超时预算默认 300ms），一次 malloc 就是一次数不够用的卡顿。
+/// 动作表：定长内联，不带堆分配——`step()` 跑在 WH_MOUSE_LL 回调里，那一段坐在**全系统**
+/// 输入链上（超时预算 300ms），一次 malloc 就是一次数不够用的卡顿。
 #[derive(Clone, Copy)]
 pub struct Actions {
     items: [Action; Self::MAX],
@@ -126,7 +100,7 @@ impl FromIterator<Action> for Actions {
 #[derive(Debug, Clone, Copy)]
 pub struct Machine {
     pub phase: Phase,
-    /// 按下点：判拖拽位移的基准，也是出盘的唯一坐标（见文件头"按下点快照"那条）
+    /// 按下点：判拖拽位移的基准，也是出盘的唯一坐标
     press: (i32, i32),
 }
 
@@ -171,7 +145,6 @@ impl Machine {
             }
             // 阈值到点：只是"手势成立了"。弧早在引导期就亮了，这里再发一次等于让前端重扫
             (Phase::Pressed, Event::TimerFired) => self.phase = Phase::Armed,
-            // Pressed / Armed 共用同一条逃逸：拖出阈值就是框选，不是长按
             (Phase::Pressed, Event::Move { x, y })
             | (Phase::Armed, Event::Move { x, y })
                 if distance(self.press, (x, y)) > DRAG_THRESHOLD_PX =>
@@ -193,8 +166,7 @@ impl Machine {
             (Phase::Armed, Event::RightUp) => {
                 self.phase = Phase::Idle;
                 let (x, y) = self.press;
-                // 只有 EmitOpen：弧由 `ring:open` 下台（前端 setCharging("off")），
-                // 这里补一条 EmitUp 等于给刚绽开的盘挂上 90ms 后收窗的定时器
+                // 只发 EmitOpen：补一条 EmitUp 等于给刚绽开的盘挂上 90ms 后收窗的定时器
                 actions.push(Action::EmitOpen { x, y });
             }
             // 其余组合都是"不该来的事件"：原地不动、不产动作（防御性口径）
@@ -241,17 +213,14 @@ mod tests {
     fn 引导期亮弧_阈值静置_松手只在按下点出盘() {
         let mut machine = Machine::default();
         machine.step(Event::RightDown { x: 10, y: 10 });
-        // 引导期（早于阈值）就该亮弧，而且带着按下点：窗要在那里亮
+        // 亮弧必须带着按下点：窗要在那里亮
         assert!(matches!(
             machine.step(Event::ChargeFired).as_slice(),
             &[Action::EmitCharging { x: 10, y: 10 }]
         ));
         assert_eq!(machine.phase, Phase::Pressed);
-        // 阈值到点只置 Armed，不再发任何东西——弧已经在扫了
         assert!(machine.step(Event::TimerFired).as_slice().is_empty());
         assert_eq!(machine.phase, Phase::Armed);
-        // 到阈值后松手：只出一条 EmitOpen。不发 EmitUp——那是"取消"，
-        // 而这里是弧交棒给盘，发了就等于给刚绽开的盘挂上 90ms 后收窗的定时器
         let actions = machine.step(Event::RightUp);
         assert!(matches!(
             actions.as_slice(),
@@ -276,8 +245,7 @@ mod tests {
 
     #[test]
     fn 拖拽超阈值转透传_补发按下并让弧淡出() {
-        // Pressed 与 Armed 两个阶段拖出去都算框选：旧实现两条都判，
-        // 少了 Armed 那条就变成"按住超过阈值再拖出去框选"只能出一张错位的盘
+        // Pressed 与 Armed 拖出去都算框选——少了 Armed 那条，按住后拖框会出一张错位的盘
         for start in [Phase::Pressed, Phase::Armed] {
             let mut machine = Machine::default();
             machine.step(Event::RightDown { x: 0, y: 0 });

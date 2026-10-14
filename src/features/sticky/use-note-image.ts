@@ -10,6 +10,7 @@
 
 import { useCallback, useState } from "react";
 import { mediaSave } from "@/platform/commands";
+import { flushNow } from "@/store/notes-store";
 import { describeError } from "@/platform/errors";
 import { MEDIA_REF_BUDGET, mediaRef } from "@/data/body-parse";
 import { isAcceptedMime, prepareImage } from "@/data/image-input";
@@ -55,6 +56,11 @@ export function useNoteImageAttacher(noteId: string): NoteImageAttacher {
       const ids: string[] = [];
       let note: string | null = null;
       let used = 0;
+      // 密级先落库再存字节。`media_save` 认的是**库行上**那个 `private`（副本会晚半拍，
+      // 反过来会把私密便签的图写明文），而"刚勾完私密就贴图"这一发，行上还停在旧值——
+      // 勾私密那一次改动正躺在 250 毫秒的去抖队列里。等一次落库，两边就是同一个答案。
+      // 顺带把正文里已有的改动也推下去：它们本来也要在 250 毫秒内落。
+      await flushNow();
       for (const file of images) {
         if (used + MEDIA_REF_BUDGET > room) {
           note = `这里只剩 ${Math.max(0, room - used)} 个字，放不下更多图片引用`;

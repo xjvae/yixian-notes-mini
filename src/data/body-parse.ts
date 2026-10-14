@@ -1,18 +1,10 @@
-// 正文识别 — 把一段纯文本切成"能看出来的东西"：代码、图片、链接，其余是文本。
-//
-// 为什么住在 data/ 而不是组件里：识别口径是一份真相。正文渲染（便签）、搜索片段、
-// 以后的导出都要问它；散在组件里就是每处各写一遍正则，迟早对不上。
-// 这一层不认 React、不认图标、不认 IPC：字符串进、段出，所以能穷举单测。
-//
-// 口径三条（都有用例钉着）：
-//  · 代码优先于一切：``` 围栏里出现 URL 就只是 URL 的字面文本，行内 `x` 同理。
-//    未闭合的围栏按"到结尾都是代码"算——用户正打着第三行，不该看到它先被认成句子。
-//  · href 只放 http/https 过。javascript: / data: / file: 一律退回普通文本：
-//    便签上的字是用户自己敲的，但这不代表它可以被点成一次执行。
-//  · 图片两种来源差别对待：media://<id> 是本机图库（字节从库里取，见 media 表），
-//    http(s) 的图**不自动加载**——CSP 是 `img-src 'self' data: blob:`
-//    （tauri.conf.json:21），放开它等于让任何一张便签拿用户的 IP 去敲陌生服务器。
-//    于是远程图给成一枚"图片链接"芯片，点开走系统浏览器。
+// 正文识别 — 把纯文本切成代码、图片、链接，其余是文本。住 data/ 而非组件里：识别口径一份真相，
+// 渲染/搜索/导出都问它。字符串进、段出，不认 React/IPC，能穷举单测。口径三条（用例钉着）：
+//  · 代码优先于一切：围栏/行内码里的 URL 只是字面文本。未闭合围栏按"到结尾都是代码"算——
+//    用户正打着第三行，不该看到它先被认成句子。
+//  · href 只放 http/https：javascript:/data:/file: 退回普通文本——字是用户敲的不代表可以被点成执行。
+//  · 图片两来源差别对待：media://<id> 从库里取字节；远程图**不自动加载**（CSP 是
+//    `img-src 'self' data: blob:`，放开等于让便签拿用户 IP 敲陌生服务器），给成芯片走系统浏览器。
 
 /** 一段正文切出来的结果。`text` 之外的段由渲染层单独画 */
 export type BodySegment =
@@ -23,23 +15,19 @@ export type BodySegment =
   | { kind: "image"; src: string; alt: string; local: boolean };
 
 /**
- * 本机图库引用的形状。`m` 前缀 + 十六进制尾巴，与 Rust 侧 `support::id::media()`
- * 一字不差（那条是 `format!("m{:x}{:x}", 毫秒, 序号)`）——两边形状对不上，
- * 粘进去的图就永远认不出来。长度给个区间：序号位数会变。
+ * 本机图库引用的形状。与 Rust 侧 `support::id::media()` 一字不差（`m` + 毫秒/序号的十六进制）
+ * ——两边形状对不上，粘进去的图就永远认不出来。长度区间：序号位数会变。
  */
 const MEDIA_REF = /^media:\/\/(m[0-9a-f]{8,24})$/;
 
 /**
- * 裸 URL 的字符集：空白、引号、尖括号、成对括号与中文标点都不算地址的一部分。
- * ASCII 括号也一并排除——`https://a.b/x_(y)` 这种地址会少截尾巴，换过来的是
- * "详见 https://a.b（官网）"不把后半句话吃进链接。宁可地址短一截，
- * 也不该把他打的字变成链接的一部分。
+ * 裸 URL 的字符集：空白/引号/尖括号/成对括号/中文标点都不算地址的一部分。ASCII 括号也排除——
+ * 换过来的是"详见 https://a.b（官网）"不把后半句吃进链接；宁可地址短一截，不把他打的字变成链接。
  */
 const URL_CHAR = String.raw`[^\s<>"'()（）【】「」，。；！？、,;:!]`;
 
 /**
- * 一次扫描五类记号。顺序即优先级：围栏 → 行内码 → 图 → 链 → 裸 URL。
- * 嵌套一律不做（链接文字里再套行内码这种）：认得越少越不会把用户的话切错。
+ * 一次扫描五类记号。顺序即优先级：围栏 → 行内码 → 图 → 链 → 裸 URL。嵌套一律不做。
  */
 const TOKENS = new RegExp(
   [
@@ -64,8 +52,8 @@ export function safeHref(raw: string): string | null {
 }
 
 /**
- * 把人打的地址收成能用的那一种：没写协议就补 https://（"example.com" 十有八九是这个意思），
- * 补完仍过 `safeHref`。返回 null = 这个地址开不了（`javascript:`、`data:`、`file:` 全在这挡）。
+ * 把人打的地址收成能用的：没写协议补 https://（"example.com" 十有八九是这个意思），
+ * 补完仍过 `safeHref`（`javascript:`、`data:`、`file:` 全在这挡）。
  */
 export function normalizeLinkUrl(raw: string): string | null {
   const trimmed = raw.trim();
@@ -79,16 +67,9 @@ export function normalizeLinkUrl(raw: string): string | null {
 export type LinkWrapResult = { ok: true; body: string } | { ok: false; reason: string };
 
 /**
- * 把正文里 `[start, end)` 这一段包成 `[原文](地址)`。人只在右键里填一个地址，
- * 剩下这些"写进去还能认得出来"的规矩由这里当场判掉：
- *  · 区间必须真落在正文里、选中不能是空白；
- *  · 选中里带 `]` 就到此为止——markdown 那句会从这里断开，包出来的是半截链接半截字
- *    （与其产出一个认不出来的东西，不如明说为什么不做）；
- *  · 地址过 `normalizeLinkUrl`：协议只认 http/https，带空格或 `)` 的地址会把
- *    `(...)` 那半边切坏（TOKENS 里那条是 `[^)\s]+`），一律不收；
- *  · 包完超长就不写（与粘图同一条口径：**放不下就说放不下，不偷偷截**。用户看不见
- *    地被裁掉一段话，比拒一次严重得多）。
- * 区间来自 `parseBodySpans`，不能是渲染后的字数——那是另一个数。
+ * 把正文 [start, end) 包成 `[原文](地址)`，当场判掉"写进去还能认得出来"的规矩：
+ * 选中带 `]` 会断 markdown、地址带空格或 `)` 会把 `(...)` 半边切坏（TOKENS 那条是 `[^)\s]+`）、
+ * 包完超长就不写（与粘图同口径：**放不下就说放不下，不偷偷截**）。区间来自 `parseBodySpans`，不是渲染后字数。
  */
 export function wrapLink(
   body: string,
@@ -127,15 +108,14 @@ export function mediaIdOf(src: string): string | null {
 }
 
 /**
- * 一句图片引用的**最坏长度**（`![alt](media://m…)` 加前后各一个换行）。
- * 正文有 BODY_MAX 字上限，粘图之前要按它先腾地方——腾不出来就当场说"正文放不下"，
- * 而不是先把几 MB 字节存进库、再发现那句引用写不进去。
+ * 一句图引用的**最坏长度**。粘图前先按它腾地方——腾不出来当场说"正文放不下"，
+ * 而不是把几 MB 字节存进库再发现引用写不进去。
  */
 export const MEDIA_REF_BUDGET = 64;
 
 /**
- * 造一句本机图引用。与 `mediaIdOf` 同一条形状，所以"写进去的"与"认得出的"
- * 不会哪天对不上。alt 里 `]` `[` 与换行会切坏 markdown，一律换成空格。
+ * 造一句本机图引用，与 `mediaIdOf` 同一条形状（写进去的与认得出的不会对不上）。
+ * alt 里 `]` `[` 与换行会切坏 markdown，一律换成空格。
  */
 export function mediaRef(id: string, name: string): string {
   const alt = name
@@ -147,9 +127,8 @@ export function mediaRef(id: string, name: string): string {
 }
 
 /**
- * 把正文折成"念给人听的一句话"：图片引用换成「图片」，链接留文字。
- * aria-label 里直接塞 `![截图](media://m…)` 会被读屏念成一串符号——那是把内部格式
- * 端到了用户耳朵里。只给标签用，不改正文本身。
+ * 把正文折成"念给人听的一句话"（只给 aria-label 用，不改正文）：
+ * 直接塞 `![截图](media://m…)` 会被读屏念成一串符号——那是把内部格式端到用户耳朵里。
  */
 export function plainPreview(text: string, max = 24): string {
   const flat = text
@@ -212,9 +191,8 @@ export interface BodySpan {
 }
 
 /**
- * 切正文并**保住每段的原文区间**。"选中了正文里的哪几个字"这件事只能靠它：
- * 渲染出来的字数和原文不是一回事（`![名](media://m…)` 画成一张图，原文占 28 个字），
- * 拿渲染文本反推就会把链接包错位置。区间只在此处算一次，别处不许再推。
+ * 切正文并**保住每段的原文区间**。"选中了正文哪几个字"只能靠它：渲染出来的字数和原文
+ * 不是一回事（一张图画出来只占一格，原文 28 个字）。区间只在此处算一次，别处不许再推。
  */
 export function parseBodySpans(body: string): BodySpan[] {
   const out: BodySpan[] = [];
@@ -244,8 +222,7 @@ export function parseBodySpans(body: string): BodySpan[] {
 }
 
 /**
- * 切正文。空串返回空数组（渲染层据此出占位）。
- * 认不出的写法一律原样留成文本，绝不吞字：识别失败的代价必须是"看不出图"，
+ * 切正文。认不出的写法一律原样留成文本，绝不吞字：识别失败的代价必须是"看不出图"，
  * 不能是"我的字没了"。
  */
 export function parseBody(body: string): BodySegment[] {

@@ -1,6 +1,5 @@
 // 组合查询 — 成员关系的唯一住址是 stickies.group_id；组行删了成员自动散着（读侧认不到组就当散）。
-// 建组的入口只有一个：**把一张拖到另一张上**（`merge_into`）。设置/菜单里没有"新建组合"
-// 那种空表单——一叠至少要有两张才立得住，而拖这个动作天然保证了这一点。
+// 建组的入口只有拖这一个（merge_into），设置/菜单没有"新建组合"——一叠至少两张才立得住，拖天然保证这点。
 
 use rusqlite::{params, OptionalExtension};
 
@@ -8,20 +7,21 @@ use crate::db::models::GroupRow;
 use crate::db::pool::Db;
 use crate::support::error::{AppError, AppResult};
 
-/// 组合名是唯一一处"给人起的短标签"，口径收在这里：去首尾空白、空回落到
-/// 「未命名组合」、按**字符数**截到 40（与便签标题同值）。
-/// 截断而不是报错：名字是标签不是正文，多打的那几个字丢掉不心疼，
-/// 报错却让改个名多一次往返。输入框那边还有 `maxLength` 挡着。
+/// 组合名上限。与便签标题同值，而**这一格是唯一的出处**：改这里要跟着改前端
+/// `data/limit.ts` 的 `GROUP_NAME_MAX`（有一条对照测试钉着，见 `mirrored-constants.test.ts`）。
+pub const NAME_MAX: usize = 40;
+
+/// 组合名口径收在这里：去首尾空白、空回落「未命名组合」、按**字符数**截到 `NAME_MAX`。
+/// 截断而非报错：名字是标签不是正文，多打几个字丢掉不心疼。
 pub fn normalize_name(raw: &str) -> String {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return "未命名组合".to_string();
     }
-    trimmed.chars().take(40).collect::<String>()
+    trimmed.chars().take(NAME_MAX).collect::<String>()
 }
 
-/// 改组合名。组不存在要明说（"移进组合"的菜单在别的窗里，那边删掉这张组、
-/// 这扇叠窗还开着是可能的，静默写成 0 行就是"改了没生效"查不到）
+/// 改组合名。组不存在要明说——静默写成 0 行就是"改了没生效"查不到
 pub fn rename(db: &Db, gid: &str, raw: &str) -> AppResult<()> {
     let name = normalize_name(raw);
     let now = crate::db::query::sticky::now_ms();
@@ -36,12 +36,10 @@ pub fn rename(db: &Db, gid: &str, raw: &str) -> AppResult<()> {
     Ok(())
 }
 
-/// 收起 / 恢复一叠的标题栏形态。`groups.collapsed` 这一列今天终于有了读者。
-///
-/// 收起那一刻顺带把**展开尺寸**存进 `width/height`：窗自身的记忆走 `window_state`
-/// （收起期间它记的就是那条 62 高的栏），所以"恢复成多大"必须有个不跟着窗变的地方，
-/// 组行这一份正好是开窗时的出生尺寸 —— 一处存两处用，不另立字段。
-/// `expand` 给 None 就是只翻状态（恢复时前端不用报尺寸，行里那份本来就是展开值）。
+/// 收起 / 恢复一叠的标题栏形态。收起那一刻顺带把**展开尺寸**存进 width/height：
+/// 窗自身的记忆（window_state）在收起期间记的就是那条 62 高的栏，
+/// "恢复成多大"必须有个不跟着窗变的地方——一处存两处用，不另立字段。
+/// `expand` 给 None 就是只翻状态（行里那份本来就是展开值）。
 pub fn set_collapsed(
     db: &Db,
     gid: &str,
@@ -68,16 +66,14 @@ pub fn set_collapsed(
 }
 
 /// 贴边 / 解除贴边。`edge` 只认那四条（前端算落点时也是这四条）：认不出的值一律
-/// 按"没贴"处理并清空，别留一个 `docked=1, dock_edge='左'` 的半吊子状态——
-/// 那种行开机时会摆出一块不在任何边上的细丝。
+/// 按"没贴"处理并清空——半吊子的 `docked=1, dock_edge='左'` 行开机时会摆出一块不在任何边上的细丝。
 pub fn set_dock(db: &Db, gid: &str, docked: bool, edge: Option<&str>) -> AppResult<()> {
     const EDGES: [&str; 4] = ["left", "right", "top", "bottom"];
     let edge = match (docked, edge) {
         (true, Some(edge)) if EDGES.contains(&edge) => Some(edge),
         _ => None,
     };
-    // 认不出边就当没贴（写回的是**这个**值，不是传进来的那个）：留一个
-    // `docked=1, dock_edge=NULL` 的行，开机前端会拿默认那条边摆出一块不在边上的细丝
+    // docked 按处理后的 edge 重算（写回的不是传进来的那个）
     let docked = edge.is_some();
     let now = crate::db::query::sticky::now_ms();
     let conn = db.lock();
@@ -186,10 +182,7 @@ pub struct Merged {
     pub created: bool,
 }
 
-/// 读一张的行——只取并组要用的那几列。
-///
-/// 为什么不用 `sticky::get`：那条会再 `db.lock()` 一次，而我们已经在同一把锁里，
-/// 同线程重入就是自锁。
+/// 读一张的行——只取并组要用的那几列。收 `&Connection`（而非 `&Db`）：这条跑在已持锁的事务里，重入自锁。
 struct Peeked {
     group_id: Option<String>,
     title: String,
@@ -220,15 +213,9 @@ fn peek(conn: &rusqlite::Connection, id: &str) -> AppResult<Option<Peeked>> {
     Ok(row)
 }
 
-/// 拖拽进组（把 source 拖到 target 上松手）。两条分支：
-///  · target 已经在某一叠里 → source 直接进那一叠，不新建；
-///  · target 还散着 → 就地建一叠收进两张。组名取 target 的标题（空则「未命名组合」），
-///    摆位**抄 target 记着的那一份**——叠窗开出来要正盖在原来那张纸上，换个地方落
-///    就是用户眼里的"我一松手它跑了"。
-///
-/// 同一张不许并到自己身上；任一张不存在/已删都报错，由调用方原样退回给用户。
-/// 新组 id 由调用方（`float::gen_group_id`）生成后传进来，这里只管用——只有真要新建
-/// 那一支才用得到，并进已有叠时忽略。
+/// 拖拽进组，三条分支：① target 是组 id → 进那一叠（必须有：`float_frames` 给叠窗报的就是组 id，组员没有自己的窗，前端拿不到成员 id 可传）；
+/// ② target 已在某一叠 → 进那一叠；③ target 还散着 → 就地建一叠，组名取 target 标题、摆位**抄 target 记着的那一份**（叠窗要正落回原纸上方）。
+/// 整个写入是一个事务：组行与两张的 `group_id` 同生同死，否则中途断一次就留下"零张"的半形叠。
 pub fn merge_into(
     db: &Db,
     source_id: &str,
@@ -242,40 +229,73 @@ pub fn merge_into(
         ));
     }
     let conn = db.lock();
-    let target = peek(&conn, target_id)?.ok_or_else(|| {
-        AppError::new("STICKY_MISSING", "要并入的那张便签已经不在了")
-    })?;
-    if peek(&conn, source_id)?.is_none() {
+    let tx = conn.unchecked_transaction()?;
+    let now = crate::db::query::sticky::now_ms();
+    if peek(&tx, source_id)?.is_none() {
         return Err(AppError::new("STICKY_MISSING", "被拖的那张便签已经不在了"));
     }
-    let now = crate::db::query::sticky::now_ms();
-    if let Some(gid) = target.group_id {
-        conn.execute(
-            "UPDATE stickies SET group_id = ?2, updated_at = ?3 WHERE id = ?1 AND deleted = 0",
-            params![source_id, gid, now],
-        )?;
-        return Ok(Merged {
-            group_id: gid,
-            created: false,
-        });
+    let target = peek(&tx, target_id)?;
+    let result = match target {
+        Some(peeked) => match peeked.group_id {
+            Some(gid) => {
+                join_group(&tx, source_id, &gid, now)?;
+                Ok(Merged {
+                    group_id: gid,
+                    created: false,
+                })
+            }
+            None => {
+                let name = normalize_name(&peeked.title);
+                tx.execute(
+                    "INSERT INTO groups (id, name, color, collapsed, x, y, width, height, created_at, updated_at)
+                     VALUES (?1, ?2, NULL, 0, ?3, ?4, ?5, ?6, ?7, ?7)",
+                    params![new_group_id, name, peeked.x, peeked.y, peeked.width, peeked.height, now],
+                )?;
+                for id in [target_id, source_id] {
+                    join_group(&tx, id, new_group_id, now)?;
+                }
+                Ok(Merged {
+                    group_id: new_group_id.to_string(),
+                    created: true,
+                })
+            }
+        },
+        None => match peek_group(&tx, target_id)? {
+            Some(gid) => {
+                join_group(&tx, source_id, &gid, now)?;
+                Ok(Merged {
+                    group_id: gid,
+                    created: false,
+                })
+            }
+            None => Err(AppError::new(
+                "STICKY_MISSING",
+                "要并入的那张便签已经不在了",
+            )),
+        },
+    };
+    if result.is_ok() {
+        tx.commit()?;
     }
-    // 名字口径与改名同一条（建组时取的是第一张便签的标题，也可能空/超长）
-    let name = normalize_name(&target.title);
+    result
+}
+
+/// 把一张的归属指到某个已存在的组（在事务里，不复查组在不在——调用方那一支已认过）
+fn join_group(conn: &rusqlite::Connection, id: &str, gid: &str, now: i64) -> AppResult<()> {
     conn.execute(
-        "INSERT INTO groups (id, name, color, collapsed, x, y, width, height, created_at, updated_at)
-         VALUES (?1, ?2, NULL, 0, ?3, ?4, ?5, ?6, ?7, ?7)",
-        params![new_group_id, name, target.x, target.y, target.width, target.height, now],
+        "UPDATE stickies SET group_id = ?2, updated_at = ?3 WHERE id = ?1 AND deleted = 0",
+        params![id, gid, now],
     )?;
-    for id in [target_id, source_id] {
-        conn.execute(
-            "UPDATE stickies SET group_id = ?2, updated_at = ?3 WHERE id = ?1 AND deleted = 0",
-            params![id, new_group_id, now],
-        )?;
-    }
-    Ok(Merged {
-        group_id: new_group_id.to_string(),
-        created: true,
-    })
+    Ok(())
+}
+
+/// 组行在不在（groups 没有 deleted 列，被清就是没了）；收 `&Connection` 同 `peek` 的理由。
+fn peek_group(conn: &rusqlite::Connection, id: &str) -> AppResult<Option<String>> {
+    Ok(conn
+        .query_row("SELECT id FROM groups WHERE id = ?1", [id], |row| {
+            row.get::<_, String>(0)
+        })
+        .optional()?)
 }
 
 /// 空组自动清：删掉没有任何未删成员的组行。返回清掉几组。
@@ -306,6 +326,10 @@ pub fn stacks_to_restore(db: &Db) -> AppResult<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
+    fn off() -> crate::data::private::PrivateVault {
+        crate::data::private::PrivateVault::disabled("group")
+    }
+
     use super::*;
     use crate::db::models::StickyInput;
     use crate::db::query::sticky;
@@ -383,8 +407,7 @@ mod tests {
         assert_eq!(err.code, "GROUP_NOT_FOUND");
     }
 
-    /// 贴边状态：认得的边才落，认不出的一律按"没贴"算。
-    /// 留一个 `docked=1, dock_edge='左'` 的半吊子行，开机就会摆出一块不在任何边上的细丝。
+    /// 钉：认不出的边写回的是处理后的值（两列一起清，别留半吊子行）
     #[test]
     fn 贴边只认那四条_其余按没贴() {
         let db = db_with_schema();
@@ -413,7 +436,7 @@ mod tests {
         let db = db_with_schema();
         make_group(&db, "g1");
         make_group(&db, "g2");
-        sticky::upsert(&db, sticky("s1", None)).expect("写 s1");
+        sticky::upsert(&db, &off(), sticky("s1", None)).expect("写 s1");
 
         assert!(set_member(&db, "s1", Some("g1")).expect("移进"));
         assert!(exists(&db, "g1").expect("组在"));
@@ -429,7 +452,7 @@ mod tests {
     #[test]
     fn 移进不存在的组被拒() {
         let db = db_with_schema();
-        sticky::upsert(&db, sticky("s1", None)).expect("写");
+        sticky::upsert(&db, &off(), sticky("s1", None)).expect("写");
         let err = set_member(&db, "s1", Some("ghost")).expect_err("必须拒");
         assert_eq!(err.code, "GROUP_MISSING");
     }
@@ -438,7 +461,7 @@ mod tests {
     fn 已删成员不算组员_空组随之清() {
         let db = db_with_schema();
         make_group(&db, "g1");
-        sticky::upsert(&db, sticky("s1", Some("g1"))).expect("写");
+        sticky::upsert(&db, &off(), sticky("s1", Some("g1"))).expect("写");
         sticky::delete(&db, "s1", false).expect("软删");
         assert_eq!(prune_empty(&db).expect("清"), 1, "成员全删的组被清");
     }
@@ -448,15 +471,14 @@ mod tests {
         let db = db_with_schema();
         make_group(&db, "g1");
         make_group(&db, "g2");
-        sticky::upsert(&db, sticky("s1", Some("g1"))).expect("写 s1（浮窗）");
+        sticky::upsert(&db, &off(), sticky("s1", Some("g1"))).expect("写 s1（浮窗）");
         let mut wall = sticky("s2", Some("g2"));
         wall.floating = false; // 墙存量（导入摊回前）
-        sticky::upsert(&db, wall).expect("写 s2");
+        sticky::upsert(&db, &off(), wall).expect("写 s2");
         assert_eq!(stacks_to_restore(&db).expect("清单"), vec!["g1"]);
     }
 
-    /// 拖到一张散着的便签上：就地立一叠，收两张，组名取**被拖到的那张**的标题，
-    /// 摆位抄它记着的那一份（叠窗要正盖在原来那张纸上）。
+    /// 钉分支③：就地立一叠，组名与摆位全抄 target 记着的那一份
     #[test]
     fn 拖到散着的张上_立一叠并抄它的标题与摆位() {
         let db = db_with_schema();
@@ -466,8 +488,8 @@ mod tests {
         target.y = Some(200);
         target.width = Some(320);
         target.height = Some(300);
-        sticky::upsert(&db, target).expect("写 target");
-        sticky::upsert(&db, sticky("s", None)).expect("写 source");
+        sticky::upsert(&db, &off(), target).expect("写 target");
+        sticky::upsert(&db, &off(), sticky("s", None)).expect("写 source");
 
         let merged = merge_into(&db, "s", "t", "g-new").expect("并组");
         assert_eq!(
@@ -482,7 +504,7 @@ mod tests {
         assert_eq!((group.x, group.y), (Some(300), Some(200)));
         assert_eq!((group.width, group.height), (Some(320), Some(300)));
         for id in ["s", "t"] {
-            let row = sticky::get(&db, id).expect("读").expect("在");
+            let row = sticky::get(&db, &off(), id).expect("读").expect("在");
             assert_eq!(row.group_id.as_deref(), Some("g-new"), "{id} 该在这一叠里");
         }
     }
@@ -492,8 +514,8 @@ mod tests {
     fn 拖到已成叠的张上_进那一叠不新建() {
         let db = db_with_schema();
         make_group(&db, "g1");
-        sticky::upsert(&db, sticky("in", Some("g1"))).expect("写组员");
-        sticky::upsert(&db, sticky("s", None)).expect("写 source");
+        sticky::upsert(&db, &off(), sticky("in", Some("g1"))).expect("写组员");
+        sticky::upsert(&db, &off(), sticky("s", None)).expect("写 source");
 
         let merged = merge_into(&db, "s", "in", "g-should-not-exist").expect("并组");
         assert_eq!(
@@ -506,12 +528,58 @@ mod tests {
         assert_eq!(list(&db).expect("清单").len(), 1, "不许多建一行组");
         assert!(!exists(&db, "g-should-not-exist").expect("查"), "新 id 不该被用上");
         assert_eq!(
-            sticky::get(&db, "s")
+            sticky::get(&db, &off(), "s")
                 .expect("读")
                 .expect("在")
                 .group_id
                 .as_deref(),
             Some("g1")
+        );
+    }
+
+    /// 钉分支①：target 是组 id 也必须认（组员没有自己的窗，前端拿不到成员 id 可传）
+    #[test]
+    fn 拖到叠窗上_target_是组_id_也进那一叠() {
+        let db = db_with_schema();
+        make_group(&db, "g1");
+        sticky::upsert(&db, &off(), sticky("in", Some("g1"))).expect("写组员");
+        sticky::upsert(&db, &off(), sticky("s", None)).expect("写 source");
+
+        let merged = merge_into(&db, "s", "g1", "g-should-not-exist").expect("并组");
+        assert_eq!(
+            merged,
+            Merged {
+                group_id: "g1".into(),
+                created: false,
+            },
+            "target 是组 id 时直接进那一叠"
+        );
+        assert_eq!(list(&db).expect("清单").len(), 1, "不许多建一叠");
+        assert_eq!(
+            sticky::get(&db, &off(), "s")
+                .expect("读")
+                .expect("在")
+                .group_id
+                .as_deref(),
+            Some("g1")
+        );
+    }
+
+    /// target 既不是便签也不是组：拒绝，不许悄悄建一叠
+    #[test]
+    fn target_两样都不是_照旧拒绝() {
+        let db = db_with_schema();
+        sticky::upsert(&db, &off(), sticky("s", None)).expect("写 source");
+        let err = merge_into(&db, "s", "没有这个东西", "g-new").expect_err("必须拒");
+        assert_eq!(err.code, "STICKY_MISSING");
+        assert!(list(&db).expect("清单").is_empty(), "被拒这一发不许多出一行组");
+        assert!(
+            sticky::get(&db, &off(), "s")
+                .expect("读")
+                .expect("在")
+                .group_id
+                .is_none(),
+            "被拒这一发也不许改归属"
         );
     }
 
@@ -521,8 +589,8 @@ mod tests {
         let db = db_with_schema();
         let mut target = sticky("t", None);
         target.title = "   ".into();
-        sticky::upsert(&db, target).expect("写");
-        sticky::upsert(&db, sticky("s", None)).expect("写");
+        sticky::upsert(&db, &off(), target).expect("写");
+        sticky::upsert(&db, &off(), sticky("s", None)).expect("写");
         merge_into(&db, "s", "t", "g2").expect("并组");
         let group = get(&db, "g2").expect("读").expect("在");
         assert_eq!(group.name, "未命名组合");
@@ -533,7 +601,7 @@ mod tests {
     #[test]
     fn 并组的三条拒绝() {
         let db = db_with_schema();
-        sticky::upsert(&db, sticky("t", None)).expect("写");
+        sticky::upsert(&db, &off(), sticky("t", None)).expect("写");
         let err = merge_into(&db, "t", "t", "g").expect_err("自己不能并自己");
         assert_eq!(err.code, "MERGE_INTO_SELF");
         let err = merge_into(&db, "s", "gone", "g").expect_err("目标不在");
@@ -547,8 +615,8 @@ mod tests {
     #[test]
     fn 并进去的张被删光_空组随之清() {
         let db = db_with_schema();
-        sticky::upsert(&db, sticky("t", None)).expect("写");
-        sticky::upsert(&db, sticky("s", None)).expect("写");
+        sticky::upsert(&db, &off(), sticky("t", None)).expect("写");
+        sticky::upsert(&db, &off(), sticky("s", None)).expect("写");
         merge_into(&db, "s", "t", "g").expect("并组");
         sticky::delete(&db, "s", false).expect("删 s");
         assert_eq!(prune_empty(&db).expect("清"), 0, "还剩 target，不该清");

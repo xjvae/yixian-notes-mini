@@ -31,6 +31,18 @@ fn with_prefix(prefix: &str) -> String {
     format!("{prefix}{:x}{:x}", now_ms(), seq)
 }
 
+/// 这个 id 摆不摆得进一扇窗。便签与组的 id 会被拼进窗 label（`sticky-<id>`）和那句
+/// `window.__STICKY_ID__ = "…"`，带 `/`、空白或引号的 id 让那一扇窗根本建不起来——
+/// 便签于是只剩列表里一行，看着像"丢了"。自己生成的都过得了，这一格挡的是外部来的：
+/// 旧库导入的行、快照恢复回来的行、前端传错的那一次。
+pub fn label_safe(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 40
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -41,6 +53,22 @@ mod tests {
         let ids: Vec<String> = (0..500).map(|_| media()).collect();
         let unique: std::collections::HashSet<&String> = ids.iter().collect();
         assert_eq!(unique.len(), ids.len());
+    }
+
+    /// 自己生成的三种 id 都要过得了那道校验；被拒的只有外部来的那些形状
+    #[test]
+    fn 摆得进窗的形状才放行() {
+        assert!(label_safe(&sticky()));
+        assert!(label_safe(&group()));
+        assert!(label_safe(&media()));
+        assert!(label_safe("s1"), "旧库那种短 id 要认");
+        assert!(
+            label_safe("550e8400-e29b-41d4-a716-446655440000"),
+            "带连字符的 UUID 形要认"
+        );
+        for bad in ["", "a/b", "../etc", "a b", "a\"b", "a;b", &"x".repeat(41)] {
+            assert!(!label_safe(bad), "{bad:?} 不许放行");
+        }
     }
 
     /// 前缀是形状的一部分：长度落在 8..=30 内，正文那条正则才认（两边同口径）

@@ -1,7 +1,7 @@
 // 设置项 — KV 表。value 存字符串（约定："0" = 显式关，缺 key = 默认值），
 // 各设置项的键名与解析随功能落地时各归各的模块，这里只管读写。
 
-use rusqlite::OptionalExtension;
+use rusqlite::{Connection, OptionalExtension};
 
 use crate::db::pool::Db;
 use crate::support::error::AppResult;
@@ -16,11 +16,32 @@ pub fn get(db: &Db, key: &str) -> AppResult<Option<String>> {
 }
 
 pub fn set(db: &Db, key: &str, value: &str) -> AppResult<()> {
-    db.lock().execute(
+    let conn = db.lock();
+    set_conn(&conn, key, value)
+}
+
+/// 同一件事，收已经拿着的锁：改密/重置要把"库里那一拍"与那一步的标记写进**同一个事务**，
+/// 分两次提交中间被杀就是那个谁也解不开的形状（见 `data/private.rs::recover_stage`）
+pub fn set_conn(conn: &Connection, key: &str, value: &str) -> AppResult<()> {
+    conn.execute(
         "INSERT INTO settings (key, value) VALUES (?1, ?2)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         [key, value],
     )?;
+    Ok(())
+}
+
+/// 读已经拿着的那把锁（启动补完要用：那时还没有 `&Db` 之外的第二份锁）
+pub fn get_conn(conn: &Connection, key: &str) -> AppResult<Option<String>> {
+    Ok(conn
+        .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
+            row.get(0)
+        })
+        .optional()?)
+}
+
+pub fn remove_conn(conn: &Connection, key: &str) -> AppResult<()> {
+    conn.execute("DELETE FROM settings WHERE key = ?1", [key])?;
     Ok(())
 }
 

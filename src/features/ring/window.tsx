@@ -1,16 +1,7 @@
-// RingMenu — 星环：长按右键松手后在按下点绽开的 4 节点直达盘。
-//
-// 移植自旧架构那份星环（它当时叫 `features/radial/menu.tsx`——那份源码不在这个仓库里，
-// 这台机器上也已经找不到了，留这个名字只为对得上历史提交里的出处）。
-// 几何、扇区、充电弧、入场动画、
-// 错峰、键盘交互全部照旧；适配只有三处：
-//  · 五格 → 四格（上=新建便签、右=搜索、下=回收站、左=设置，正交四方位）；
-//    强调色的错峰取 [-7, 7, -3, 3]（原五格 [-14,-6,0,6,14] 的等距中置版）；
-//  · 旧版"唤起意图"（get_radial_action / popup:action）在本项目没有对应后端，
-//    唤起一律停在主菜单；充电弧事件链等价移植（ring:charging / ring:up / ring:open
-//    / ring:dismiss，由钩子的消费线程广播）；
-//  · 新建便签不带类型参数（四类切换在便签窗工具条上，环上不重复）。
-//
+// RingMenu — 星环：长按右键松手后在按下点绽开的 4 节点直达盘（上=新建便签、右=搜索、下=回收站、左=设置）。
+// 事件链 ring:charging / ring:up / ring:open / ring:dismiss 由钩子的消费线程广播；
+// 旧架构的"唤起意图"（get_radial_action / popup:action）没有对应后端，唤起一律停在主菜单。
+// 新建便签不带类型参数（四类切换在便签窗工具条上，环上不重复）。
 // 收场四条：点节点、点环外空白、Esc、盘外左键（钩子转 ring:dismiss）。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ListChecks, Search, Settings2, Trash2, X } from "lucide-react";
@@ -154,8 +145,7 @@ export function RingMenu() {
   // 防重入：Enter 与鼠标点击几乎同时到达时会开两扇窗，锁掉第二次
   const busyRef = useRef(false);
   const unit = useUnit();
-  // 星环跑在透明窗口里，扇区/标签/提示是 SVG 属性与内联样式，
-  // CSS 深色层覆盖不住，只能按方案取（盘面本身走 index.css 的 .radial-disc）
+  // 星环跑在透明窗里，扇区/标签/提示是 SVG 属性与内联样式，CSS 深色层覆盖不住，只能按方案取（盘面走 index.css）
   const scheme = useScheme();
   const ring = RING_INK[scheme.resolved];
 
@@ -164,8 +154,7 @@ export function RingMenu() {
     return () => window.clearTimeout(t);
   }, []);
 
-  // 钩子事件链：到阈值 → charging（带此刻生效的阈值）；松手 → up；盘亮 → open；
-  // 盘驻留时盘外左键 → dismiss
+  // 钩子事件链：到阈值 → charging（带此刻生效的阈值）；松手 → up；盘亮 → open；盘驻留时盘外左键 → dismiss
   useEffect(() => {
     let cancelled = false;
     let unCharge: (() => void) | undefined;
@@ -189,11 +178,9 @@ export function RingMenu() {
         // 盘要绽开了，充电态必须先下台：charging !== "off" 时渲染的是
         // "只有弧"那一棵树，留着它盘就永远出不来
         setCharging("off");
-        // **重放入场动画**：星环窗是 prewarm 常驻隐藏的（windows/ring.rs），React 树
-        // 只在预热时挂载一次，那个 20ms 的 entered 也只翻一次——之后每次 show 拿到的
-        // 都是动画终态，出盘就成了"啪一下直接出现"。这里打回 false 再等一帧置真。
-        // 兜底定时器不能省：rAF 在不可见/被节流的 WebView 里可能一帧都不发，
-        // 只等 rAF 的话 entered 会永远停在 false —— 那是"盘完全不显示"，比没动画糟得多。
+        // **重放入场动画**：星环窗是 prewarm 常驻隐藏的（windows/ring.rs），React 树只在预热挂载一次、
+        // entered 只翻一次，不重播的话每次 show 拿到的都是终态——"啪一下直接出现"。
+        // 兜底定时器不能省：rAF 在不可见/被节流的 WebView 里可能一帧都不发，只等 rAF 会永远停在 false（盘完全不显示）
         setEntered(false);
         let flipped = false;
         const flip = (): void => {
@@ -543,8 +530,7 @@ export function RingMenu() {
               }}
               title={`${it.label}（${i + 1}）`}
             >
-              {/* 节点图标无底托：悬停不缩放、不加衬底，靠扇区浅灰填充表达选中。
-                  外层 span 40px 见方只为撑命中区（WCAG 2.5.8） */}
+              {/* 外层 span 40px 见方只为撑命中区（WCAG 2.5.8）；选中由扇区填充表达，图标不加衬底 */}
               <span
                 className="flex items-center justify-center rounded-full"
                 style={{

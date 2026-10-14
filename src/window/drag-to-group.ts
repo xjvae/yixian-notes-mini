@@ -18,7 +18,7 @@ import { floatFrames, groupList, stickyMergeInto } from "@/platform/commands";
 import { currentWindow, currentWindowLabel } from "@/platform/bridge";
 import { logger } from "@/platform/logger";
 import { flushNow } from "@/store/notes-store";
-import { useNotes } from "@/store/hooks";
+import { useNoteTitles } from "@/store/hooks";
 
 const SCOPE = "merge";
 /** 探针点离窗顶的物理像素：落在标题带里，又不用抄那条带的高度 */
@@ -89,7 +89,7 @@ interface UseDragToGroup {
  * @param enabled 收起态/贴边态/动画期间关掉：那几趟 moved 都不是用户把窗往别人身上拖
  */
 export function useDragToGroup(id: string, enabled: boolean): UseDragToGroup {
-  const notes = useNotes();
+  const titles = useNoteTitles();
   const [candidate, setCandidate] = useState<MergeCandidate | null>(null);
   const label = currentWindowLabel();
   const enabledRef = useRef(enabled);
@@ -109,11 +109,10 @@ export function useDragToGroup(id: string, enabled: boolean): UseDragToGroup {
       if (frame.kind === "stack") {
         return clip(groupsRef.current.get(frame.id) ?? "那一叠");
       }
-      const note = notes.find((row) => row.id === frame.id);
-      const title = note?.title.trim() ?? "";
+      const title = (titles.get(frame.id) ?? "").trim();
       return clip(title === "" ? "未命名便签" : title);
     },
-    [notes],
+    [titles],
   );
 
   const clearCandidate = useCallback((): void => {

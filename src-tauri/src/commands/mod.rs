@@ -8,6 +8,7 @@ pub mod db;
 pub mod entity;
 pub mod hook;
 pub mod hotkey;
+pub mod log;
 pub mod media;
 pub mod private;
 pub mod revision;

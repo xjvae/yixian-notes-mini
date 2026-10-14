@@ -1,20 +1,12 @@
-// input — 全局"长按右键唤星环"的手势链：状态机（纯）→ 低级钩子（接线）→ 星环。
-//
-// 本模块对外只暴露配置与生命周期；判定逻辑在 state.rs（纯，可穷举单测），
-// 白名单口径在 allowlist.rs（纯），Win32 机器房在 win_hook.rs。
-//
-// 配置语义：
-//  · `hold_ms`：长按阈值，落库（`ring.trigger.hold_ms`），跨启动生效；
-//  · `charging`：充电弧总开关，落库（`ring.charging`）——关掉它引导期那张定时器
-//    表根本不建，长按过程零反馈；
-//  · `paused`：暂停劫持是"直到下次启动"的临时开关，**刻意不落库**——落库会让
-//    用户以为右键坏了（重启都救不回来），重启即恢复是刻意的；
-//  · 白名单：落库（`hook.whitelist`），跨启动生效。
-//
-// 另外这里放着星环盘的**驻留账本**（`ring_shown` / `ring_hidden` / `ring_contains`）：
-// 窗那边写，回调这边读，全程原子量——盘在不在、点击在不在盘内，是钩子的判定输入。
+// input — 全局"长按右键唤星环"的手势链：判定在 state.rs（纯），早退策略在 policy.rs（纯），
+// 白名单口径在 allowlist.rs（纯），Win32 机器房在 win_hook.rs；本模块对外只暴露配置与生命周期。
+// 配置语义：hold_ms（ring.trigger.hold_ms）、charging（ring.charging）、白名单（hook.whitelist）落库跨启动生效；
+// `paused` **刻意不落库**——落库会让用户以为右键坏了（重启都救不回来），重启即恢复是刻意的。
+// 另外这里放着星环盘的驻留账本（ring_shown / ring_hidden / ring_contains）：窗那边写，回调这边读，
+// 全程原子量——盘在不在、点击在不在盘内，是钩子的判定输入。
 
 pub mod allowlist;
+mod policy;
 mod state;
 mod win_hook;
 
@@ -35,10 +27,8 @@ static WHITELIST: RwLock<Vec<String>> = RwLock::new(Vec::new());
 pub(crate) const TASKBAR_SLOTS: usize = 4;
 
 /// 任务栏（含托盘）的**物理**矩形，每条 4 个值：left / top / right / bottom。
-///
-/// 用定长原子量数组而不是 `RwLock<Vec<_>>`：读它的是钩子回调，那里不许拿任何锁
-/// （见 `win_hook` 文件头铁律 1）。写侧是采样线程，一格一格 store 就行——
-/// 最坏情况是读到一个"半新半旧"的矩形，那一枚按钮上这一次按下没被豁免而已。
+/// 定长原子量数组而不是 RwLock：读它的是钩子回调，那里不许拿任何锁。
+/// 最坏读到"半新半旧"的矩形——那一枚按钮这一次没被豁免而已。
 static TASKBARS: [AtomicI32; TASKBAR_SLOTS * 4] =
     [const { AtomicI32::new(0) }; TASKBAR_SLOTS * 4];
 static TASKBAR_COUNT: AtomicU8 = AtomicU8::new(0);
@@ -56,9 +46,8 @@ pub(crate) fn set_taskbar_rects(rects: &[(i32, i32, i32, i32)]) {
 }
 
 /// 物理坐标是否落在任务栏（含托盘）里。回调里调用，无锁。
-///
-/// **一条都没缓存到就返回 false**，与白名单"读不到进程名就算没命中"是同一条规矩：
-/// 反过来做等于"查不到矩形"时把整块屏幕的右键全豁免掉，那是把主入口悄悄关掉。
+/// **一条都没缓存到就返回 false**（与白名单读不到名字算不命中同一条规矩）：
+/// 反着做等于查不到矩形时把整屏右键全豁免——主入口就被悄悄关掉了。
 pub(crate) fn over_taskbar(x: i32, y: i32) -> bool {
     let count = (TASKBAR_COUNT.load(Ordering::Relaxed) as usize).min(TASKBAR_SLOTS);
     for i in 0..count {
@@ -116,18 +105,13 @@ pub fn foreground_name() -> Option<String> {
     win_hook::foreground_name()
 }
 
-/// 星环盘驻留账本：盘的**物理**矩形 + "此刻在不在桌面上"。
-///
-/// 用原子量而不是锁：读它的是钩子回调（铁律：回调里不许拿任何锁）。盘外左键要能
-/// 判成"取消"，盘内左键必须**不**判成取消——只有布尔就做不出这个区分：盘驻留时
-/// 任何一次左键（包括点格子那一下）都会先被当成盘外，症状是"点节点没反应，环却收了"。
+/// 星环盘驻留账本：盘的**物理**矩形 + "此刻在不在桌面上"。读侧是钩子回调，所以全程原子量。
+/// 要矩形而不只是布尔：盘外左键判"取消"、盘内那一下必须不判——只有布尔时点格子那一下
+/// 也被判成盘外，症状是"点节点没反应，环却收了"。
 static RING_PRESENT: AtomicBool = AtomicBool::new(false);
-/// 引导教程正指着盘讲（第二、三步）——那期间**盘外左键不收环**。
-///
-/// 为什么要这一道：气泡是盘外的一扇小窗，点它上面的「下一步」就是一次数标外的左键，
-/// 按平时的规则那一下会把环收掉。症状是作者报的"第二步闪星环盘"：环刚出来，
-/// 他点一下推进，环没了，下一步的气泡又指着空气。
-/// 盘内那一下照常收环（点格子本来就该收），所以闸门只加在盘外那一条上。
+/// 引导教程正指着盘讲（第二、三步）——那期间**盘外左键不收环**：
+/// 气泡是盘外的小窗，点「下一步」就是一次数标外的左键，按平时规则会把环收掉。
+/// 盘内那一下照常，所以闸门只加在盘外那条上。
 static GUIDE_HOLDS_RING: AtomicBool = AtomicBool::new(false);
 static RING_LEFT: AtomicI32 = AtomicI32::new(0);
 static RING_TOP: AtomicI32 = AtomicI32::new(0);
@@ -135,9 +119,7 @@ static RING_RIGHT: AtomicI32 = AtomicI32::new(0);
 static RING_BOTTOM: AtomicI32 = AtomicI32::new(0);
 
 /// 盘绽开后公告它的**外框**（物理像素）。
-///
-/// 充电弧那条路**刻意不调**这里：弧没有盘，公告了矩形就会把这段时间里的左键
-/// 全判成"盘外"，用户正好在长按，手就在那 360×360 里。
+/// 充电弧那条路**刻意不调**：公告了矩形就会把长按期间的左键全判成"盘外"——手正在那 360×360 里。
 pub fn ring_shown(left: i32, top: i32, width: i32, height: i32) {
     RING_LEFT.store(left, Ordering::Relaxed);
     RING_TOP.store(top, Ordering::Relaxed);
@@ -151,8 +133,7 @@ pub fn ring_hidden() {
     RING_PRESENT.store(false, Ordering::Relaxed);
 }
 
-/// 盘此刻在不在屏幕上。充电弧用它做闸门：盘还驻留时再按一次右键，充电态要把
-/// **同一个窗**改成鼠标穿透，那会把用户正在看的盘点掉。
+/// 盘此刻在不在屏幕上。充电弧用它做闸门（穿透后果见 win_hook 的 Charging 分支注释）。
 pub(crate) fn ring_present() -> bool {
     RING_PRESENT.load(Ordering::Relaxed)
 }
@@ -196,8 +177,7 @@ mod tests {
         set_taskbar_rects, MAX_HOLD_MS, MIN_HOLD_MS,
     };
 
-    /// 任务栏豁免的三条判据：命中含边界、**空表算没命中**、负坐标副屏的任务栏也认。
-    /// 空表那条最关键：反过来做等于"查不到矩形"时把整屏右键全豁免掉，主入口就没了。
+    /// 任务栏豁免判据：命中含边界、**空表算没命中**（反着做等于整屏全豁免、主入口没了）、负坐标副屏也认。
     #[test]
     fn 空表算没命中() {
         set_taskbar_rects(&[]);
@@ -251,10 +231,8 @@ mod tests {
         assert_eq!(hold_ms(), 450);
     }
 
-    /// 盘内/盘外判定的三条方向，合成一条用例：这几格是全局原子量，
-    /// 拆成两条会并行互踩（flaky）。
-    /// 第一条最关键：**未公告矩形时一律算盘内**。反过来做就是"摆位还没落地的那
-    /// 一瞬间用户已经按下左键"被判成盘外，盘刚绽开就被自己收掉。
+    /// 盘内/盘外判定：未公告矩形一律算盘内（反着做=盘刚绽开就被自己收掉）、含边界、负坐标。
+    /// 合成一条用例：这几格是全局原子量，拆开并行会互踩（flaky）。
     #[test]
     fn 盘矩形判定_未公告算盘内_含边界_负坐标() {
         ring_hidden();

@@ -60,14 +60,10 @@ pub fn run(our_dir: &Path, db: &Db) {
     }
 }
 
-/// 执行导入。返回 None = 标记已存在（导入过）。整个导入 + 标记在同一个事务里。
+/// 执行导入。返回 None = 标记已存在（导入过）。导入与标记在同一个事务里。
 pub fn import_from(legacy_path: &Path, db: &Db) -> AppResult<Option<ImportReport>> {
-    let legacy = Connection::open_with_flags(
-        legacy_path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .map_err(|e| AppError::new("IMPORT", format!("打不开旧库 {}：{e}", legacy_path.display())))?;
-
+    // 标记先问、旧库后开：导过一次之后每次启动都要走这一格，
+    // 白付一次"打开旧库"换一个"已经导过了"不值
     let conn = db.lock();
     let done: Option<String> = conn
         .query_row(
@@ -79,6 +75,12 @@ pub fn import_from(legacy_path: &Path, db: &Db) -> AppResult<Option<ImportReport
     if done.is_some() {
         return Ok(None);
     }
+
+    let legacy = Connection::open_with_flags(
+        legacy_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|e| AppError::new("IMPORT", format!("打不开旧库 {}：{e}", legacy_path.display())))?;
 
     let tx = conn.unchecked_transaction()?;
     let mut stickies = 0usize;

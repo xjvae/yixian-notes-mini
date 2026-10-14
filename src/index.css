@@ -47,9 +47,10 @@ body {
   height: 100%;
 }
 
-/* 防止 textarea/input 拖出聚焦框时窗体被拖动 */
-input,
-textarea {
+/* 防止 textarea/input 拖出聚焦框时窗体被拖动。**只抹非 focus-visible**：
+ * 原来这一句把键盘的焦点环一起抹了，Tab 到哪个框都看不见（输入框点本来就有环，不受影响） */
+input:not(:focus-visible),
+textarea:not(:focus-visible) {
   outline: none;
 }
 

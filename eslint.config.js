@@ -71,6 +71,31 @@ export default tseslint.config(
             { name: "@tauri-apps/api/core" },
             { name: "@tauri-apps/api/event" },
             { name: "@tauri-apps/api/window" },
+            // 删除那条口令门：`sticky_delete` / `trash_clear_all` 是直接打 IPC 的裸命令，
+            // 绕过 `requirePrivateUnlock` 就是"没输口令删掉私密便签"。
+            // 合法调用方在下一条配置里单独放行（store 的 backend 与回收站那一窗）
+            {
+              name: "@/platform/commands",
+              importNames: ["stickyDelete", "trashClearAll"],
+              message:
+                "删除私密便签要过口令门：用 store 的 removeNote，或按 window/private-gate.ts 的 requirePrivateUnlock 接一道门",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    // 上面那条的两处例外。**加第三处之前先想清楚**：新的删除入口应该接门，不是进这里
+    files: ["src/store/backend.ts", "src/features/trash/window.tsx"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            { name: "@tauri-apps/api/core" },
+            { name: "@tauri-apps/api/event" },
+            { name: "@tauri-apps/api/window" },
           ],
         },
       ],

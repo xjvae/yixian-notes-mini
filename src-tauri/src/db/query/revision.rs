@@ -1,8 +1,5 @@
-// 单张便签的历史版本 — 一行 = 这张被换掉之前的内容形状。
-// 表的设计理由（为什么存"之前"、为什么只存内容、为什么私密不记）写在 0009_revisions.sql。
-//
-// **所有函数收 `&Connection` 而不是 `&Db`**：记录发生在 `sticky::upsert` 已经拿着
-// 那把库锁的时候，而 `Db` 是一个不可重入的 `Mutex<Connection>`——再进一次就自锁。
+// 单张便签的历史版本 — 一行 = 这张被换掉之前的内容形状；表的设计理由见 0009_revisions.sql。
+// 所有函数收 `&Connection` 而非 `&Db`：记录发生在 sticky::upsert 持锁之中，Db 不可重入、再进就自锁。
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -10,15 +7,14 @@ use serde::{Deserialize, Serialize};
 use crate::db::models::{StickyItem, TimelineEntry};
 use crate::support::error::{AppError, AppResult};
 
-/// 每张留最新多少条
 pub const KEEP_PER_NOTE: i64 = 50;
-/// 超过这么多天的版本一律不要
 pub const KEEP_DAYS: i64 = 7;
 /// 同一张两次记录之间的最小间隔。写路径每 250ms 就 flush 一次（store 的去抖），
 /// 不夹一下的话打一段字就能把 50 条填满，"历史"退化成"上一次按键"
 pub const COALESCE_MS: i64 = 60_000;
-const DAY_MS: i64 = 24 * 60 * 60 * 1000;
-/// 列表里那一行给多少个字的摘要
+/// 私密切文表那边（`private_note.rs`）走同一套保留量，所以这格得是 pub——
+/// 两处各写一份，改一边忘另一边就是"历史凭空少一半"
+pub const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 const PREVIEW_CHARS: usize = 60;
 
 /// 一版的内容。**只有内容字段**——摆位/尺寸/置顶/贴边/收起/归组不进版本，
@@ -50,11 +46,17 @@ pub struct RevisionMeta {
     pub preview: String,
 }
 
-/// 在**换掉那一张之前**记一版。记不上不该挡住写，所以调用方把它的错误降成一条日志。
-///
-/// `force = true` 只给"回滚"用：回滚会把当前内容整个换掉，而当前内容可能正是
-/// 三秒前刚打的字——夹在冷却里不记，就没有第二次回滚回到它的路了。
-pub fn record(conn: &Connection, id: &str, now: i64, force: bool) -> AppResult<()> {
+/// 在**换掉那一张之前**记一版。记不上不该挡住写（调用方把错误降成一条日志）。
+/// `force = true` 只给回滚：当前内容可能正是三秒前刚打的字，夹在冷却里不记就没有第二次回滚。
+/// `going_private = true`：不但**不记**，还要把它以前留下的明文版本一并删掉——这张表谁都能读，
+/// 留着等于刚被保护的真身转头抄进一份没加密的历史里（私密此后只有密文表那套版本）。
+pub fn record(
+    conn: &Connection,
+    id: &str,
+    now: i64,
+    force: bool,
+    going_private: bool,
+) -> AppResult<()> {
     let current = conn
         .query_row(
             "SELECT title, body, content_type, items_json, timeline_json, tags_json, theme, \
@@ -85,6 +87,13 @@ pub fn record(conn: &Connection, id: &str, now: i64, force: bool) -> AppResult<(
     let Some((content, private)) = current else {
         return Ok(());
     };
+    if going_private {
+        // 只在真的翻面那一刻清（已经是私密的每张普通保存不该反复扫这张表）
+        if private == 0 {
+            delete_for_note(conn, id)?;
+        }
+        return Ok(());
+    }
     if private == 1 {
         return Ok(());
     }
@@ -138,7 +147,6 @@ pub fn delete_for_note(conn: &Connection, id: &str) -> AppResult<()> {
     Ok(())
 }
 
-/// 那一版的列表（新的在前）。
 pub fn list(conn: &Connection, id: &str) -> AppResult<Vec<RevisionMeta>> {
     let mut stmt = conn.prepare(
         "SELECT seq, created_at, content_json FROM sticky_revisions \
@@ -183,20 +191,25 @@ pub fn load(conn: &Connection, id: &str, seq: i64) -> AppResult<Option<Content>>
     .transpose()
 }
 
-/// 列表里那一行的摘要。四类便签的正文不在同一个字段（文本/提醒是 `body`、
-/// 清单是 `items[].text`、时间轴是 `timeline[].text`），所以得跟着类型分岔——
-/// 与 `data/note-types.ts::plainBody` 同一个理由。
-fn preview_of(content: &Content) -> String {
-    let source = match content.content_type.as_str() {
-        "todo" => serde_json::from_str::<Vec<StickyItem>>(&content.items_json)
+/// 列表行的摘要。四类便签的正文住址不同（文本/提醒是 `body`、清单/时间轴取数组第一条），
+/// 得跟着类型分岔——与 `data/note-types.ts::plainBody` 同一判据。
+/// 收散件而不是 `&Content`：私密切文表那份（`private_note::SealedContent`）共用这一格。
+pub fn preview_of_parts(
+    content_type: &str,
+    body: &str,
+    items_json: &str,
+    timeline_json: &str,
+) -> String {
+    let source = match content_type {
+        "todo" => serde_json::from_str::<Vec<StickyItem>>(items_json)
             .ok()
             .and_then(|items| items.into_iter().next().map(|item| item.text))
             .unwrap_or_default(),
-        "timeline" => serde_json::from_str::<Vec<TimelineEntry>>(&content.timeline_json)
+        "timeline" => serde_json::from_str::<Vec<TimelineEntry>>(timeline_json)
             .ok()
             .and_then(|rows| rows.into_iter().next().map(|row| row.text))
             .unwrap_or_default(),
-        _ => content.body.clone(),
+        _ => body.to_string(),
     };
     let flat = source.replace('\n', " ").trim().to_string();
     let chars: Vec<char> = flat.chars().collect();
@@ -208,8 +221,21 @@ fn preview_of(content: &Content) -> String {
     head
 }
 
+fn preview_of(content: &Content) -> String {
+    preview_of_parts(
+        &content.content_type,
+        &content.body,
+        &content.items_json,
+        &content.timeline_json,
+    )
+}
+
 #[cfg(test)]
 mod tests {
+    fn off() -> crate::data::private::PrivateVault {
+        crate::data::private::PrivateVault::disabled("revision")
+    }
+
     use super::*;
     use crate::db::models::StickyInput;
     use crate::db::pool::Db;
@@ -252,8 +278,7 @@ mod tests {
         }
     }
 
-    /// 换正文但不触发记录。这些用例测的是 `record` 自己的判定，而 `sticky::upsert`
-    /// 现在也会用**真实时钟**记一版——混用两套时钟只会让冷却判据看着不相符。
+    /// 换正文但不触发记录：走 upsert 会用真实时钟另记一版，两套时钟混着用冷却判据就不相符了
     fn set_body(conn: &Connection, id: &str, body: &str) {
         conn.execute(
             "UPDATE stickies SET body = ?2 WHERE id = ?1",
@@ -262,7 +287,6 @@ mod tests {
         .expect("改正文");
     }
 
-    /// 一版合法的内容快照（灌历史表用，字段一个都不能少）
     fn content_json(body: &str) -> String {
         serde_json::to_string(&Content {
             title: "t".into(),
@@ -280,18 +304,17 @@ mod tests {
         .expect("序列化")
     }
 
-    /// upsert 走的是 `sticky::upsert`，它内部会调 `record`。所以这几条用例测的
-    /// 就是生产写路径，不是绕开它自己拼一遍
+    /// upsert 内部就会调 record——这几条走的是生产写路径，不是另拼一遍
     #[test]
     fn 改一次记一版_记的是改之前那份() {
         let db = db();
-        sticky::upsert(&db, input("s1", "第一版")).expect("新建");
+        sticky::upsert(&db, &off(), input("s1", "第一版")).expect("新建");
         let conn = db.lock();
         assert!(
             list(&conn, "s1").expect("列").is_empty(),
             "新建没有\"之前\"，不该记"
         );
-        record(&conn, "s1", 1_700_000_000_000, false).expect("记");
+        record(&conn, "s1", 1_700_000_000_000, false, false).expect("记");
         set_body(&conn, "s1", "第二版");
         let rows = list(&conn, "s1").expect("列");
         assert_eq!(rows.len(), 1);
@@ -309,24 +332,22 @@ mod tests {
     fn 打字流被夹住_内容没变不占格() {
         let db = db();
         let t0 = 1_700_000_000_000;
-        sticky::upsert(&db, input("s1", "甲")).expect("新建");
+        sticky::upsert(&db, &off(), input("s1", "甲")).expect("新建");
         // 同一分钟内连打五次（真实打字就是这个节奏：每 250ms flush 一次）
         let mut at = t0;
         for offset in 1..=5 {
             at = t0 + offset * 3_000;
             let conn = db.lock();
-            record(&conn, "s1", at, false).expect("记");
+            record(&conn, "s1", at, false, false).expect("记");
             set_body(&conn, "s1", &format!("甲{}", offset));
         }
         let conn = db.lock();
         let rows = list(&conn, "s1").expect("列");
         assert_eq!(rows.len(), 1, "第一条记下了，后四次全被冷却夹掉");
         assert_eq!(rows[0].preview, "甲");
-        // 冷却之外且内容确实变了 → 记第二条
-        record(&conn, "s1", at + 61_000, false).expect("记");
+        record(&conn, "s1", at + 61_000, false, false).expect("记");
         assert_eq!(list(&conn, "s1").expect("列").len(), 2);
-        // 再记一次但内容没变（只是翻了个置顶）→ 不占格
-        record(&conn, "s1", at + 122_000, false).expect("再记");
+        record(&conn, "s1", at + 122_000, false, false).expect("再记");
         assert_eq!(list(&conn, "s1").expect("列").len(), 2, "内容没变不重复占格");
     }
 
@@ -335,12 +356,11 @@ mod tests {
     fn force_绕过冷却() {
         let db = db();
         let t0 = 1_700_000_000_000;
-        sticky::upsert(&db, input("s1", "甲")).expect("新建");
+        sticky::upsert(&db, &off(), input("s1", "甲")).expect("新建");
         let conn = db.lock();
-        record(&conn, "s1", t0, false).expect("记");
+        record(&conn, "s1", t0, false, false).expect("记");
         set_body(&conn, "s1", "乙");
-        // 三秒后就回滚：冷却内，但 force 那一发必须落得下
-        record(&conn, "s1", t0 + 3_000, true).expect("force 记");
+        record(&conn, "s1", t0 + 3_000, true, false).expect("force 记");
         let rows = list(&conn, "s1").expect("列");
         assert_eq!(rows.len(), 2, "force 那一发必须落得下");
         assert_eq!(rows[0].preview, "乙", "新的在前：刚打的这份才是回滚要救的那个");
@@ -379,11 +399,11 @@ mod tests {
     fn 硬删便签带走全部版本() {
         let db = db();
         let t0 = 1_700_000_000_000;
-        sticky::upsert(&db, input("s1", "甲")).expect("新建");
+        sticky::upsert(&db, &off(), input("s1", "甲")).expect("新建");
         let conn = db.lock();
-        record(&conn, "s1", t0, false).expect("记");
+        record(&conn, "s1", t0, false, false).expect("记");
         // 内容没再变，这条走的是"没变就不占格"那条路（与冷却无关）
-        record(&conn, "s1", t0 + 61_000, false).expect("记二");
+        record(&conn, "s1", t0 + 61_000, false, false).expect("记二");
         drop(conn);
         assert!(sticky::delete(&db, "s1", true).expect("硬删"));
         assert!(list(&db.lock(), "s1").expect("列").is_empty(), "不留孤儿版本行");
@@ -395,9 +415,46 @@ mod tests {
         let db = db();
         let mut seed = input("p1", "明文正文");
         seed.is_private = true;
-        sticky::upsert(&db, seed).expect("新建私密");
+        sticky::upsert(&db, &off(), seed).expect("新建私密");
         let conn = db.lock();
-        record(&conn, "p1", 1_700_000_000_000, true).expect("连 force 也不记");
+        record(&conn, "p1", 1_700_000_000_000, true, false).expect("连 force 也不记");
+        assert!(list(&conn, "p1").expect("列").is_empty());
+    }
+
+    /// 标记私密那一拍：不记新版，还要把旧明文版本一并清掉（否则回滚能把私密正文写回行上）
+    #[test]
+    fn 标记私密那一拍把旧的明文版本清干净() {
+        let db = db();
+        let t0 = 1_700_000_000_000;
+        sticky::upsert(&db, &off(), input("s1", "公开时的第一版")).expect("新建");
+        {
+            let conn = db.lock();
+            record(&conn, "s1", t0, false, false).expect("记一");
+            set_body(&conn, "s1", "公开时的第二版");
+            record(&conn, "s1", t0 + 61_000, false, false).expect("记二");
+            assert_eq!(list(&conn, "s1").expect("列").len(), 2, "翻面前正常有两版");
+        }
+        let mut flip = input("s1", "公开时的第二版");
+        flip.is_private = true;
+        sticky::upsert(&db, &off(), flip).expect("标记私密");
+        let conn = db.lock();
+        assert!(
+            list(&conn, "s1").expect("列").is_empty(),
+            "翻面那一刻旧明文必须一并清掉"
+        );
+    }
+
+    /// 翻面之后的普通保存/force 都走"私密不记"那条路，也不反复扫这张表
+    #[test]
+    fn 私密之后的普通保存仍然一条不记() {
+        let db = db();
+        let mut seed = input("p1", "第一版");
+        seed.is_private = true;
+        sticky::upsert(&db, &off(), seed).expect("新建私密");
+        let conn = db.lock();
+        set_body(&conn, "p1", "第二版");
+        record(&conn, "p1", 1_700_000_000_000, false, false).expect("普通保存那条路");
+        record(&conn, "p1", 1_700_061_000_000, true, false).expect("force 那条路");
         assert!(list(&conn, "p1").expect("列").is_empty());
     }
 

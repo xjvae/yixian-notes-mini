@@ -1,21 +1,10 @@
 // win_hook — WH_MOUSE_LL 低级鼠标钩子：吞 down + 阈值 + 补偿注入 + 白名单采样。
-//
-// 线程模型（三条铁律）：
-//   1. **回调里零跨进程调用、零阻塞锁、零日志、零 emit**。任何可能"向别的线程
-//      要东西"的 Win32 调用都会把全系统输入链卡住（低级钩子同步串在输入流上，
-//      超时默认 300ms）。回调只做：读原子量、`try_lock` + `try_send`、
-//      `SetTimer`/`KillTimer`、`PostMessageW`（注入推给泵线程做，见 `request_inject`，
-//      `SendInput` 一律不进回调）。判定"前台是否在白名单"由采样线程
-//      每 200ms 算好写进原子量，回调只读结论。预算：本回调 ≤1ms。
-//   2. **钩子与消息泵同线程**：SetTimer 需要窗口载体（message-only 窗），
-//      WM_TIMER 在同一条 GetMessageW 泵里收到——"到阈值置 armed"与事件判定
-//      跑在同一线程，没有跨线程竞态。互斥的状态机用 `try_lock`：竞争即放行，
-//      宁可少劫一次，不可卡全系统一毫秒。
-//   3. **退出必须真的卸钩子**：泵线程任一退出路径置 PUMP_DONE；主线程等待
-//      500ms，等不到就自己 UnhookWindowsHookEx 兜底（见 mod.rs 的 shutdown）。
-//
-// 自反馈防线：本模块 SendInput 注入的事件带 LLMHF_INJECTED，回调看到即放行——
-// 不做这一条，注入的 down 会被自己再吞一遍，死循环。
+// 铁律 1：回调坐在全系统输入链上（超时默认 300ms，本回调预算 ≤1ms）——只许读原子量、
+//   try_lock/try_send、SetTimer/KillTimer/PostMessageW；禁日志、禁阻塞锁、禁跨进程调用；
+//   SendInput 一律推给泵线程做（见 request_inject）。
+// 铁律 2：钩子与消息泵同线程（SetTimer 要 message-only 窗做载体，WM_TIMER 与事件判定无跨线程竞态）；状态机 try_lock，竞争即放行。
+// 铁律 3：退出必卸钩子——泵线程任一退出路径置 PUMP_DONE，主线程 500ms 等不到就自己 UnhookWindowsHookEx（见 mod.rs 的 shutdown）。
+// 自反馈防线：注入的事件带 LLMHF_INJECTED，回调看到即放行，否则注入的 down 被自己再吞一遍。
 
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender};
@@ -36,14 +25,15 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowExW,
     FindWindowW, GetForegroundWindow, GetMessageW, GetWindowRect, GetWindowThreadProcessId, HHOOK,
-    HWND_MESSAGE, KillTimer, LLMHF_INJECTED, MSG, MSLLHOOKSTRUCT, PostMessageW, PostThreadMessageW,
+    HWND_MESSAGE, KillTimer, MSG, MSLLHOOKSTRUCT, PostMessageW, PostThreadMessageW,
     RegisterClassExW, SetTimer, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx,
-    WH_MOUSE_LL, WINDOW_STYLE, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_QUIT, WM_RBUTTONDOWN,
-    WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW,
+    WH_MOUSE_LL, WINDOW_STYLE, WM_LBUTTONDOWN, WM_QUIT, WM_RBUTTONDOWN,
+    WM_TIMER, WNDCLASSEXW,
 };
 
 use super::allowlist;
-use super::state::{Action, Event, Machine, Phase};
+use super::policy;
+use super::state::{Action, Event, Machine};
 use super::{hold_ms, is_paused, whitelist};
 use crate::support::log;
 
@@ -51,13 +41,9 @@ const TIMER_ID: usize = 1;
 /// 充电弧的引导期计时器（比 Hold 早到点，见 `charge_lead_ms`）
 const CHARGE_TIMER: usize = 0x514F;
 
-// 充电弧的**留尾**：只在离阈值还剩这么多毫秒时才亮起来。
-//
-// 为什么不"按下即亮"：亮弧这条路径要给 360×360 的顶层 webview 窗做"摆位 + show +
-// 设穿透 + 一次 IPC"。旧项目把它设在固定 120ms，结果真机反馈"整个右键都变慢，浏览器
-// 和桌面都一样"——因为"有意识地右键"的正常时长恰好落在 150~250ms 这一带，于是每一次
-// 右键都付一次上述开销，还正压在系统上下文菜单要出现的那一瞬间。
-// 贴着阈值亮之后：只有真在长按才碰窗口，普通右键一次都不碰。
+// 充电弧的**留尾**：只在离阈值还剩这么多毫秒时才亮起来。不"按下即亮"——亮弧要给
+// 360×360 顶层 webview 窗做摆位+show+设穿透+一次 IPC，而"有意识地右键"正常时长恰落在
+// 150~250ms：即亮等于每次右键都付这个开销，还正压在系统上下文菜单要出现的那一瞬间。
 const CHARGE_TAIL_MS: u32 = 150;
 
 // 引导期 = 阈值 - 留尾，但不早于半个阈值（否则阈值调到下限 150ms 时弧只剩几毫秒，
@@ -87,22 +73,30 @@ pub enum RingEvent {
     Open { x: i32, y: i32 },
     /// 引导期走完：星环窗**在按下点**亮起，前端画充电弧（带上此刻真正生效的阈值）
     Charging { x: i32, y: i32, hold_ms: u32 },
-    /// 松手/转拖拽：弧淡出，整盘随后开（长按那条路不发这条，见 state.rs）
+    /// 松手/转拖拽：弧淡出，整盘随后开（长按那条路不发这条）
     Up,
     /// 盘驻留期间**盘外**左键按下：前端收环，这次点击原样放行
     Dismiss,
 }
 type OpenSender = SyncSender<RingEvent>;
-/// 直接 OnceLock，不套 Mutex：读它的是钩子回调（见 `notify`），
-/// 在系统输入链上拿锁就是铁律 1 禁止的事，而这里根本没有需要互斥的写侧——
-/// sender 只在 spawn 时装一次，之后只有 try_send。
+/// 直接 OnceLock 不套 Mutex：读它的是钩子回调（铁律 1 禁锁），而写侧只在 spawn 时装一次，
+/// 之后只有 try_send，本就没有需要互斥的写。
 static OPEN_SENDER: OnceLock<OpenSender> = OnceLock::new();
 
 // —— 装配 ——
 
+/// `panic = "abort"` 下崩的那一趟走不到日志的收尾，而这一格若崩在启动里，真机上看到的
+/// 就是"程序没起来"、现场一行都没有。先把话落到那份文件里再 panic
+fn abort_with_log(what: &str) -> ! {
+    log::error("input", &format!("{what} —— 钩子起不来，这一趟启动就此中止"));
+    panic!("{what}");
+}
+
 pub fn spawn(app: tauri::AppHandle) {
     let (sender, receiver) = sync_channel::<RingEvent>(8);
-    OPEN_SENDER.set(sender).expect("input 只装配一次");
+    if OPEN_SENDER.set(sender).is_err() {
+        abort_with_log("装配 OPEN_SENDER 失败：input 只该装配一次");
+    }
 
     // 消费线程：开窗/广播（IPC/窗口操作绝不进回调）
     {
@@ -114,20 +108,14 @@ pub fn spawn(app: tauri::AppHandle) {
                     RingEvent::Open { x, y } => {
                         let app = app.clone();
                         tauri::async_runtime::spawn(async move {
-                            // ring:open 的广播与"盘在这里"的矩形公告都在
-                            // windows/ring.rs::reveal 里做——出盘只有一条路，
-                            // 交接事件和公告跟着 show 走，别在这里各发一次
-                            // （发两遍前端就要重放两遍入场）
+                            // ring:open 的广播与矩形公告都在 ring.rs::reveal 里做——出盘只有一条路，别重复发
                             if let Err(e) = crate::windows::ring::open_at(&app, x, y).await {
                                 log::warn("input", &format!("唤起星环失败：{e}"));
                             }
                         });
                     }
-                    // 走到这里已经是引导期走完、手还按着（**不是按下即亮**）。
-                    // "每次右键都闪一下"正是全局工具最容易招致卸载的那类打扰，
-                    // 所以这里再兜一道：开关关掉、或者盘还驻留着，就什么都不做。
-                    // 后一条尤其要紧：充电态要把这同一个窗改成鼠标穿透，
-                    // 盘正开着的时候那么干等于把用户正在看的盘点掉。
+                    // 到这里已是引导期走完、手还按着（不是按下即亮）。兜两道：开关关掉或盘还驻留
+                    // 就什么都不做——充电态要把同一个窗改成鼠标穿透，会把用户正在看的盘点掉。
                     RingEvent::Charging { x, y, hold_ms } => {
                         if !crate::input::charging() || crate::input::ring_present() {
                             continue;
@@ -136,9 +124,7 @@ pub fn spawn(app: tauri::AppHandle) {
                             log::warn("input", &format!("亮起充电弧失败：{e}"));
                         }
                     }
-                    // 弧淡出：只广播，**不 hide 窗口**。那 90ms 归前端画，
-                    // 画完它自己调 close_ring_window；后端抢着收窗就是把淡出抹平，
-                    // 症状是"反馈闪一下就没"。
+                    // 弧淡出：只广播**不 hide 窗口**——90ms 淡出归前端画，画完它自己调 close_ring_window
                     RingEvent::Up => {
                         let _ = app.emit("ring:up", ());
                     }
@@ -153,22 +139,20 @@ pub fn spawn(app: tauri::AppHandle) {
     let pump = std::thread::Builder::new()
         .name("yixian-hook".into())
         .spawn(pump_loop)
-        .expect("起钩子线程");
-    PUMP_THREAD
-        .set(Mutex::new(Some(pump)))
-        .expect("input 只装配一次");
+        .unwrap_or_else(|e| abort_with_log(&format!("起钩子线程失败：{e}")));
+    if PUMP_THREAD.set(Mutex::new(Some(pump))).is_err() {
+        abort_with_log("装配 PUMP_THREAD 失败：input 只该装配一次");
+    }
 
-    // 白名单采样线程：结论只写原子量。它另外管两件"贵调用"——任务栏矩形与屏表缓存
-    // （星环摆位要按"按下点在哪块屏、那块屏缩放多少"，见 windows/monitor.rs）
+    // 白名单采样线程：结论只写原子量；另管两件"贵调用"——任务栏矩形与屏表缓存（星环摆位用）
     let sampler_app = app.clone();
     std::thread::Builder::new()
         .name("yixian-allowlist".into())
         .spawn(move || sampler_loop(&sampler_app))
-        .expect("起采样线程");
+        .unwrap_or_else(|e| abort_with_log(&format!("起采样线程失败：{e}")));
 }
 
-/// 退出清理：通知泵退出并等 500ms；等不到就从这里直接卸钩子兜底。
-/// 在 RunEvent::Exit 里调用——这条路上再卡死，进程就只能靠外部收尸了。
+/// 退出清理：通知泵退出并等 500ms；等不到就从这里直接卸钩子兜底（RunEvent::Exit 里调用）。
 pub fn shutdown() {
     SHUTTING_DOWN.store(true, Ordering::SeqCst);
     let thread_id = PUMP_THREAD_ID.load(Ordering::SeqCst);
@@ -267,7 +251,6 @@ fn pump_loop() {
             DispatchMessageW(&msg);
         }
 
-        // GetMessageW 返回 0 = 收到 WM_QUIT
         let _ = KillTimer(Some(hwnd), TIMER_ID);
         let _ = KillTimer(Some(hwnd), CHARGE_TIMER);
         let stored = HOOK.swap(0, Ordering::SeqCst);
@@ -291,17 +274,13 @@ unsafe extern "system" fn def_proc(
 
 // —— 钩子回调：全系统输入链上的一段，只许做最便宜的事 ——
 
-/// 自证计数：排"右键慢"时第一件想知道的就是"慢不赖我"还是"赖我"。
-/// 全部 relaxed 原子读改，**回调里绝不写日志**；聚合成一行由采样线程做。
+/// 回调自证计数：全部 relaxed 原子读改，**回调里绝不写日志**；聚合成一行由采样线程做。
 static CB_COUNT: AtomicU64 = AtomicU64::new(0);
 /// 我们这段自身耗时（不含 CallNextHookEx 与后续链）的历史最大值
 static CB_OWN_MAX_US: AtomicU64 = AtomicU64::new(0);
 static CB_OWN_SUM_US: AtomicU64 = AtomicU64::new(0);
 static CB_OVER_1MS: AtomicU64 = AtomicU64::new(0);
-/// 超 1ms 的那几次分别是什么消息：0 移动 / 1 右键按下 / 2 右键抬手 / 3 其它。
-/// 分账的理由：最长一次到过 5425µs，光看总数定不了责——WM_MOUSEMOVE 走的是最前面
-/// 那条放行分支（读两个原子量就 `CallNextHookEx`），它要是也能超 1ms，账就不在本模块
-/// 头上，而是这条线程被系统抢走了。分开了才知道下一步该改代码还是该改线程优先级。
+/// 超 1ms 的尖刺按消息种类分账（种类见 `spike_kind`）：MOUSEMOVE 那支只读原子量就放行，它也超时说明线程被系统抢走，账不在本模块
 static CB_SPIKE: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 /// 右键三计数：进了手势逻辑的、被任务栏豁免掉的、被吞掉的
 static RB_DOWN: AtomicU64 = AtomicU64::new(0);
@@ -309,8 +288,7 @@ static RB_EXEMPT: AtomicU64 = AtomicU64::new(0);
 static RB_SWALLOW: AtomicU64 = AtomicU64::new(0);
 
 unsafe extern "system" fn hook_proc(ncode: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    // 两次 Instant::now() 是纯读（各几十纳秒），换到的是"这段有没有卡过 1ms"的证据。
-    // 不测含 CallNextHookEx 的总时长：那一段本来就不归我们，测了也解释不了。
+    // 两次 Instant::now() 是纯读（纳秒级），换"这段有没有卡过 1ms"的证据；不测含 CallNextHookEx 的总时长（不归我们）
     CB_COUNT.fetch_add(1, Ordering::Relaxed);
     let started = std::time::Instant::now();
     let out = unsafe { hook_body(ncode, wparam, lparam) };
@@ -319,124 +297,67 @@ unsafe extern "system" fn hook_proc(ncode: i32, wparam: WPARAM, lparam: LPARAM) 
     CB_OWN_SUM_US.fetch_add(own, Ordering::Relaxed);
     if own > 1000 {
         CB_OVER_1MS.fetch_add(1, Ordering::Relaxed);
-        CB_SPIKE[spike_kind(wparam.0 as u32)].fetch_add(1, Ordering::Relaxed);
+        CB_SPIKE[policy::spike_kind(wparam.0 as u32)].fetch_add(1, Ordering::Relaxed);
     }
     out
 }
 
-/// 尖刺分账用的消息种类：0 移动 / 1 右键按下 / 2 右键抬手 / 3 其它。
-/// if 链而不是 match：这里的 `WM_*` 是 u32 常量，走模式匹配不如直接比。
-fn spike_kind(msg: u32) -> usize {
-    if msg == WM_MOUSEMOVE {
-        0
-    } else if msg == WM_RBUTTONDOWN {
-        1
-    } else if msg == WM_RBUTTONUP {
-        2
-    } else {
-        3
-    }
-}
-
+/// 回调体：读 Win32 的事实 → 交给 `policy::classify` 判 → 执行判定结果。
+/// 判的东西全在 policy 里（那边是无锁无分配纯函数，每种组合都有用例）。
 unsafe extern "system" fn hook_body(ncode: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    // SAFETY：全部操作只读原子量/状态机、try_send 通道、调用 Win32 的
-    // SetTimer/KillTimer/PostMessageW（无阻塞、无分配路径、无跨线程等待）。
-    // 注入不在这段做（见 request_inject）。
+    // SAFETY：这段只读一个系统递进来的结构、读原子量、try_send 通道、调用 SetTimer/KillTimer/
+    // PostMessageW（无阻塞、无分配、无跨线程等待）；注入不在这段做。
     unsafe {
-        if ncode < 0 {
-            return CallNextHookEx(None, ncode, wparam, lparam);
-        }
-        if SHUTTING_DOWN.load(Ordering::Relaxed) {
-            return CallNextHookEx(None, ncode, wparam, lparam);
-        }
         let info = &*(lparam.0 as *const MSLLHOOKSTRUCT);
-        if info.flags & LLMHF_INJECTED != 0 {
-            // 自己注入的补偿事件：直接放行，防自反馈
-            return CallNextHookEx(None, ncode, wparam, lparam);
-        }
         let msg = wparam.0 as u32;
-        let is_right_down = msg == WM_RBUTTONDOWN;
-        let is_right_up = msg == WM_RBUTTONUP;
-        let is_move = msg == WM_MOUSEMOVE;
-        // 盘驻留期间的左键也要进来看一眼——早退里必须把它排除掉，否则下面那条
-        // Dismiss 分支永远进不来（实测过：环收不掉，只能再按一次右键）。
-        // 但只有**盘外**那一下才算"收环"，判据在下面。
-        let is_left_down = msg == WM_LBUTTONDOWN;
-        let ring_may_dismiss = is_left_down && crate::input::ring_present();
-        if !is_right_down && !is_right_up && !is_move && !ring_may_dismiss {
-            return CallNextHookEx(None, ncode, wparam, lparam);
-        }
-
-        // 任务栏/托盘整条豁免：那上面的右键归系统（托盘图标、任务栏按钮的跳转列表）。
-        // 不豁免的话每一次托盘右键都要走"吞 down + 注入一对 down/up"，用户感知的
-        // 卡顿正出在这条路径上。读的是采样线程缓存好的物理矩形，无锁。
-        if is_right_down && crate::input::over_taskbar(info.pt.x, info.pt.y) {
-            RB_EXEMPT.fetch_add(1, Ordering::Relaxed);
-            return CallNextHookEx(None, ncode, wparam, lparam);
-        }
-
-        // 盘驻留期间的**盘外**左键：发 Dismiss 让前端收环，这次点击照常放行。
-        // 盘内那一下必须什么都不发：低级钩子看得见的坐标是全屏幕的，点格子那一下
-        // 同样会走到这里——只有布尔账本时就把它判成盘外，症状是
-        // "点节点没反应，环却收了"。读的是 reveal 公告好的物理矩形，无锁。
-        if ring_may_dismiss {
-            // 引导教程正指着盘讲的时候，盘外左键**不**收环：气泡就在盘外，点它推进
-            // 按平时的规则等于把环点掉（"第二步闪星环盘"就是这条）。盘内那一下照常。
-            if !crate::input::ring_contains(info.pt.x, info.pt.y)
-                && !crate::input::guide_holds_ring()
-            {
-                notify(RingEvent::Dismiss);
-            }
-            return CallNextHookEx(None, ncode, wparam, lparam);
-        }
-
-        // 新手势的准入判定（只在 down 时做；采样线程的结论已经是算好的原子量）
-        if is_right_down {
+        // 只在真要判的那几发上读那两片缓存：这条链坐在**全系统**输入链上
+        let ring_may_dismiss = msg == WM_LBUTTONDOWN && crate::input::ring_present();
+        let facts = policy::Facts {
+            chained: ncode < 0,
+            shutting_down: SHUTTING_DOWN.load(Ordering::Relaxed),
+            injected: policy::is_injected(info.flags),
+            over_taskbar: msg == WM_RBUTTONDOWN
+                && crate::input::over_taskbar(info.pt.x, info.pt.y),
+            ring_present: crate::input::ring_present(),
+            in_ring: ring_may_dismiss && crate::input::ring_contains(info.pt.x, info.pt.y),
+            guide_holds_ring: crate::input::guide_holds_ring(),
+            paused: is_paused(),
+            whitelisted: ALLOWED.load(Ordering::Relaxed),
+        };
+        if msg == WM_RBUTTONDOWN {
             RB_DOWN.fetch_add(1, Ordering::Relaxed);
-            if is_paused() || ALLOWED.load(Ordering::Relaxed) {
-                return CallNextHookEx(None, ncode, wparam, lparam);
-            }
         }
-
-        let event = match msg {
-            _ if is_right_down => Event::RightDown { x: info.pt.x, y: info.pt.y },
-            _ if is_right_up => Event::RightUp,
-            _ => Event::Move { x: info.pt.x, y: info.pt.y },
-        };
-
-        let (actions, swallow) = match MACHINE.try_lock() {
-            Ok(mut machine) => {
-                let pre = machine.phase;
-                let actions = machine.step(event);
-                let post = machine.phase;
-                // 只吞右键的 down 与 up，**move 一条都不吞**——旧实现把这条写进了
-                // 用例名："框选要能用：本条 move 必须放行"。吞掉手势期间的移动有
-                // 两个代价：按住时指针冻在原地，而判定转透传的那一下应用刚收到
-                // 补发的 down、正等位移跟上。
-                // down 只在真起手（→Pressed）时吞；up 在 Pressed/Armed 里吞——
-                // 短按要换成注入的补偿、长按要出盘，两种都不该让应用收到抬手。
-                let in_gesture = matches!(pre, Phase::Pressed | Phase::Armed);
-                let swallow = if is_right_down {
-                    post == Phase::Pressed
-                } else if is_right_up {
-                    in_gesture
-                } else {
-                    false
+        match policy::classify(msg, info.pt.x, info.pt.y, &facts) {
+            policy::Verdict::Pass(reason) => {
+                if reason == policy::Pass::Taskbar {
+                    RB_EXEMPT.fetch_add(1, Ordering::Relaxed);
+                }
+                if reason == policy::Pass::Dismissed {
+                    notify(RingEvent::Dismiss);
+                }
+                CallNextHookEx(None, ncode, wparam, lparam)
+            }
+            policy::Verdict::Feed(event) => {
+                let (actions, swallow) = match MACHINE.try_lock() {
+                    Ok(mut machine) => {
+                        let pre = machine.phase;
+                        let actions = machine.step(event);
+                        let post = machine.phase;
+                        (actions, policy::swallows(pre, post, &event))
+                    }
+                    Err(_) => {
+                        // 状态机被占着（理论上不该发生：泵与回调同线程）：宁可放行也不等
+                        return CallNextHookEx(None, ncode, wparam, lparam);
+                    }
                 };
-                (actions, swallow)
+                execute(actions.as_slice(), true);
+                if swallow {
+                    RB_SWALLOW.fetch_add(1, Ordering::Relaxed);
+                    LRESULT(1)
+                } else {
+                    CallNextHookEx(None, ncode, wparam, lparam)
+                }
             }
-            Err(_) => {
-                // 状态机被占着（理论上不该发生：泵与回调同线程）：宁可放行也不等
-                return CallNextHookEx(None, ncode, wparam, lparam);
-            }
-        };
-
-        execute(actions.as_slice(), true);
-        if swallow {
-            RB_SWALLOW.fetch_add(1, Ordering::Relaxed);
-            LRESULT(1)
-        } else {
-            CallNextHookEx(None, ncode, wparam, lparam)
         }
     }
 }
@@ -471,14 +392,9 @@ fn inject_flags(what: usize) -> &'static [u32] {
     }
 }
 
-/// **注入只能发生在消息泵线程，不能发生在回调里**（旧实现原话：以前就在这里
-/// `SendInput`，结果是"每一次右键都慢半拍，浏览器和桌面都一样"）。
-/// 理由：我们没返回之前整条系统输入链都停在这段回调上，而注入出去那对事件还要
-/// 再走一遍这条链（还要再进我们自己的 LLMHF_INJECTED 分支）、再进目标应用队列，
-/// 才由 DefWindowProc 生成 WM_CONTEXTMENU——放在回调里就是把这串塞进用户
-/// 按住与松手之间的那几十毫秒。
-/// 投递失败（队列满、消息窗已毁）就当场自己做：宁可慢那一次，
-/// 也不能让用户的上下文菜单干脆弹不出来——补偿注入是这功能不惹恼用户的底线。
+/// **注入只能发生在消息泵线程，不能发生在回调里**：回调返回之前整条系统输入链都停在
+/// 这里，而注入出去那对事件还要再走一遍这条链、再进目标应用队列，才生成 WM_CONTEXTMENU。
+/// 投递失败（队列满、消息窗已毁）就当场自己做——宁可慢那一次，不能让上下文菜单弹不出来。
 fn request_inject(what: usize, in_callback: bool) {
     if in_callback {
         let hwnd_raw = HOOK_WINDOW.load(Ordering::SeqCst);
@@ -507,8 +423,7 @@ fn execute(actions: &[Action], in_callback: bool) {
                 let hwnd = HOOK_WINDOW.load(Ordering::SeqCst);
                 SetTimer(Some(HWND(hwnd as *mut _)), TIMER_ID, hold_ms(), None);
             },
-            // 阈值与引导期都在这里现读：设置窗改了阈值不必重装钩子。
-            // 充电弧被关掉时这张表根本不建——那条路每次都要碰一扇 360×360 的窗
+            // 阈值与引导期都在这里现读：设置窗改了阈值不必重装钩子
             Action::StartChargeTimer => unsafe {
                 if crate::input::charging() {
                     let lead = charge_lead_ms(hold_ms());
@@ -561,12 +476,7 @@ fn send_input(flags: &[u32]) {
     }
 }
 
-// —— 采样线程：白名单结论、任务栏矩形、回调耗时聚合 ——
-//
-// 三条活都在这个线程做，回调那边只读原子量。旧实现的两条经验一并搬过来：
-//  · 前台窗口没换就不重复做那串贵调用（OpenProcess + QueryFullProcessImageNameW）；
-//  · 回调耗时不写日志、只攒原子计数，攒够了由这里聚成一行落文件——
-//    "右键慢不赖本模块"得能被证明，而不是靠猜。
+// —— 采样线程：白名单结论、任务栏矩形、回调耗时聚合（回调那边只读原子量）——
 
 /// 每 5 轮（≈1s）刷一次任务栏矩形：它的形状只有移动任务栏/插拔显示器时会变
 const TASKBAR_REFRESH_TICKS: u32 = 5;
@@ -586,9 +496,8 @@ fn sampler_loop(app: &tauri::AppHandle) {
         std::thread::sleep(Duration::from_millis(SAMPLER_INTERVAL_MS));
         tick = tick.wrapping_add(1);
 
-        // 前台进程名只在换了前台窗口时才查（OpenProcess + QueryFullProcessImageNameW
-        // 那串是贵调用，每 200ms 一次白跑）；名单结论每轮都重算，
-        // 这样在设置窗里改白名单不必等切窗口就生效
+        // 前台进程名只在换了前台窗时才查（OpenProcess + QueryFullProcessImageNameW 是贵调用）；
+        // 名单结论每轮重算——设置窗里改白名单不必等切窗口就生效
         let hwnd_raw = foreground_hwnd_raw();
         if hwnd_raw != last_hwnd {
             last_hwnd = hwnd_raw;
@@ -618,7 +527,7 @@ fn foreground_hwnd_raw() -> isize {
     unsafe { GetForegroundWindow() }.0 as isize
 }
 
-/// 收一条任务栏矩形；满了就不收（超出的屏回到"被劫持"的默认行为）
+/// 收一条任务栏矩形，槽满即丢（丢弃的后果见 mod.rs 的 `TASKBAR_SLOTS` 说明）
 fn push_taskbar_rect(out: &mut Vec<(i32, i32, i32, i32)>, hwnd: HWND) {
     if out.len() >= crate::input::TASKBAR_SLOTS {
         return;
@@ -629,19 +538,13 @@ fn push_taskbar_rect(out: &mut Vec<(i32, i32, i32, i32)>, hwnd: HWND) {
     }
 }
 
-/// 主任务栏 + 各副屏任务栏的物理矩形（最多 4 条）。
-///
-/// `Shell_SecondaryTrayWnd` 用 FindWindowExW 顺着句柄走同类的下一个，
-/// 不必 EnumWindows 一趟回调。一条都没查到就返回空表——空表在 `over_taskbar`
-/// 里算"没命中"，也就是不豁免，与白名单读不到名字算不命中同一条规矩。
+/// 主任务栏 + 各副屏任务栏的物理矩形。副屏用 FindWindowExW 顺着同类走下一个，
+/// 不必 EnumWindows 一趟回调；空表 = 没有豁免区（口径见 `over_taskbar`）。
 fn collect_taskbar_rects() -> Vec<(i32, i32, i32, i32)> {
     let mut out = Vec::new();
     unsafe {
-        // 类名是**第一个**参数：写成 `FindWindowW(None, w!("Shell_TrayWnd"))` 是拿
-        // "Shell_TrayWnd" 当窗口标题去找，永远找不到 —— 于是主屏任务栏从来没进过这张表，
-        // 那条"任务栏/托盘整条豁免"只在副屏生效（副屏走 FindWindowExW，那个的类名在第三位，
-        // 恰好是对的）。症状就是主屏任务栏上每一次右键都走"吞 down + 注入一对 down/up"，
-        // 也就是这条注释里说要避开的那个卡顿。
+        // 注意：FindWindowW 的类名是**第一个**参数（FindWindowExW 里才在第三位）——摆错就是拿它当
+        // 标题去找，主屏任务栏永远进不了这张表，豁免只剩副屏生效。
         if let Ok(main) = FindWindowW(windows::core::w!("Shell_TrayWnd"), None)
             && !main.is_invalid()
         {
@@ -699,7 +602,7 @@ fn report_costs() {
 }
 
 /// 前台窗口所属进程的可执行基名（已小写、去 .exe）。
-/// 读不到（提权程序、受保护进程）返回 None——按"不在名单"算，见 allowlist 头注释。
+/// 读不到（提权程序、受保护进程）返回 None——按"不在名单"算。
 fn foreground_executable_base() -> Option<String> {
     unsafe {
         let hwnd = GetForegroundWindow();
@@ -743,8 +646,7 @@ pub fn foreground_name() -> Option<String> {
 mod tests {
     use super::charge_lead_ms;
 
-    /// 引导期必须落在"贴阈值"那一带：这是整条延迟修复的判据。
-    /// 数值取自旧实现的同一组断言。
+    /// 钉住"贴阈值亮"：引导期必须严格早于阈值、不早于半个阈值、留尾不拖成长等待。
     #[test]
     fn 引导期贴阈值亮() {
         assert_eq!(charge_lead_ms(450), 300);

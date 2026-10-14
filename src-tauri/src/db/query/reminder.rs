@@ -1,27 +1,20 @@
-// 提醒扫描 — 到点该响的那几张。判据是纯函数 `due_to_fire`，可以穷举，不碰连接。
-//
-// 为什么在 Rust 侧扫而不是前端定时器：窗可能是隐藏的（贴边、收起、根本没开），
-// 隐藏页里的 `setInterval` 会被 WebView2 节流甚至暂停，"到点不响"就是这么来的。
-// 应用本身常驻（托盘 + 星环 + 全局钩子），所以计时放这儿。
-//
-// 发生点（occurrence）算法：锚点 + k×24h（daily）/ + k×7d（weekly）。这与前端
-// `data/due.ts::nextOccurrence`（按日历天 + 墙上时刻）在**无夏令时的时区里完全等价**；
-// 有 DST 的地方两者会差一小时，那条口径写在前端那份注释里，这里不另发明一套轮子。
+// 提醒扫描 — 到点该响的那几张。判据是纯函数 `due_to_fire`，不碰连接。
+// 为什么在 Rust 侧扫：便签窗可能隐藏/贴边，WebView2 会节流甚至暂停隐藏页里的 `setInterval`（"到点不响"就是这么来的）；
+// 应用本身常驻（托盘 + 星环 + 全局钩子），计时放这儿。
+// 发生点 = 锚点 + k×24h（daily）/ k×7d（weekly），与前端 `data/due.ts::nextOccurrence` 同一口径（仅 DST 下差一小时，见那份注释）。
 
 use crate::db::pool::Db;
 use crate::support::error::AppResult;
 
-/// 过期太久就不补弹：开机时对着一年前的提醒弹一条通知，只会让人觉得这功能疯了。
-/// 24 小时是拍的（作者口径"超 24h 不补"）。
+/// 过期太久不补弹：开机对着一年前的提醒弹通知只会让人觉得这功能疯了。24h 是拍的（作者口径"超 24h 不补"）。
 pub const REMIND_GRACE_MS: i64 = 24 * 60 * 60 * 1000;
 
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 const WEEK_MS: i64 = 7 * DAY_MS;
 
 /// 一条到期提醒的扫描结果。`occurrence` 是这一次发生的时刻，直接写回 `reminded_at`。
-///
-/// `group_id` 决定"拉到屏上"去找哪扇窗：组员住在 `stickygrp-*` 那一叠里，
-/// `sticky-<id>` 那扇单窗对它压根不存在（漏了这一列，组里的提醒就只有通知、没有落点）。
+/// `group_id` 决定"拉到屏上"去找哪扇窗：组员住在 `stickygrp-*` 那一叠里，`sticky-<id>` 单窗对它不存在
+/// （漏了这一列，组里的提醒就只有通知、没有落点）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Due {
     pub id: String,
@@ -34,16 +27,9 @@ pub struct Due {
     pub occurrence: i64,
 }
 
-/// 该不该响、为哪一次发生响。返回 `Some(发生点)` = 该弹一次。
-///
-/// 三条判据缺一不可：
-///
-/// - 发生点必须**已经过去**（`occurrence <= now`）；
-/// - 但不能过去太久（`now - occurrence <= REMIND_GRACE_MS`），否则陈年提醒会补弹一堆；
-/// - 而且这一次**没弹过**（`reminded_at != occurrence`）。存的不是时间戳而是发生点，
-///   所以用户一改到期时间就自动重新生效，不用谁记得去清标记。
-///
-/// 还没完成（`done_at` 为空）才谈得上提醒，这条由调用方的 WHERE 挡（这里不重复判）。
+/// 该不该响、为哪一次发生响：`Some(发生点)` = 该弹一次。三条判据在函数体（发生点已过、没过太久、这次没弹过）。
+/// 存的不是时间戳而是发生点——用户一改到期时间就自动重新生效，不用谁记得去清标记。
+/// 未完成（`done_at` 为空）才谈得上提醒：这条由调用方的 WHERE 挡，这里不重复判。
 pub fn due_to_fire(
     due_at: i64,
     repeat: &str,
@@ -68,8 +54,7 @@ pub fn due_to_fire(
     Some(occurrence)
 }
 
-/// 捞该响的那几张。`content_type='reminder'` 是唯一的门槛——别的类型即便填了 due_at
-/// 也不该响（那字段对它们没有意义）。
+/// 捞该响的那几张。唯一门槛是 `content_type='reminder'`——due_at 对别的类型没有意义，不该响。
 pub fn pending(db: &Db, now: i64) -> AppResult<Vec<Due>> {
     let conn = db.lock();
     let mut stmt = conn.prepare(
@@ -108,8 +93,7 @@ pub fn pending(db: &Db, now: i64) -> AppResult<Vec<Due>> {
     Ok(out)
 }
 
-/// 记下"这一次已经弹过了"。**发完再写**：先写后发，一旦发通知那步崩了，
-/// 这条提醒就永远哑了（用户看不到任何东西，还以为自己没设）。
+/// 记下"这一次已经弹过了"。**发完再写**：先写后发，一旦发通知那步崩了，这条提醒就永远哑了。
 pub fn mark(db: &Db, id: &str, occurrence: i64) -> AppResult<()> {
     let conn = db.lock();
     // 目标行可能在这中间被删了/改时间了：写 0 行不算错（下一次扫描再判一遍）
@@ -120,17 +104,35 @@ pub fn mark(db: &Db, id: &str, occurrence: i64) -> AppResult<()> {
     Ok(())
 }
 
-/// 一行当前的 `reminded_at`。**没有"改到期时间时清标记"那条路**：存的本来就是发生点，
-/// 改完对不上自然就重新生效，多一个清标记的入口只是多一处能写错的地方。
-/// 只有用例读它（生产路径不需要），所以 `pub(crate)` + 允许 dead-code 之外的写法：
-/// 直接放进 tests，避免给 lib 留一个只有测试用的公开 API。
+/// 「稍后再响」推多久。10 分钟是拍的：离开工位回来一趟的尺度，又不短到让人以为它不会再响
+pub const SNOOZE_MS: i64 = 10 * 60 * 1000;
+
+/// 稍后再响：把到期时刻推到 `now + SNOOZE_MS` 并清掉"这次弹过了"的标记——下一轮扫描就又会响。
+/// 只动调度那两列，不动 `updated_at`：这是"这条提醒再来一次"，不是有人改了这张便签的内容。
+///
+/// 重复的那些要认一笔账：锚点被挪到 snooze 那一刻，之后的 daily/weekly 也跟着挪（一次最多 10 分钟）。
+/// 不这么做的替代是把发生点往后推而锚点不动，可那样这一轮**根本不会再响**——判据要的是
+/// `occurrence <= now`，锚点还在过去就立刻又响一次。不加表的前提下，漂 10 分钟是两边里能接受的那个。
+pub fn snooze(db: &Db, id: &str, now: i64) -> AppResult<()> {
+    let conn = db.lock();
+    // 条件与 `pending` 那道门槛一致：勾掉的那张已经办完了，稍后再响不该把它复活
+    conn.execute(
+        "UPDATE stickies SET due_at = ?2, reminded_at = NULL \
+         WHERE id = ?1 AND deleted = 0 AND content_type = 'reminder' \
+           AND due_at IS NOT NULL AND done_at IS NULL",
+        rusqlite::params![id, now + SNOOZE_MS],
+    )?;
+    Ok(())
+}
+
+/// 一行当前的 `reminded_at`。只有用例读它——直接放进 tests，免得给 lib 留一个只有测试用的公开 API。
+/// 没有"改到期时间时清标记"那条路：存的本来就是发生点，改完对不上自然重新生效，多入口=多一处能写错。
 #[cfg(test)]
 fn fired_for(db: &Db, id: &str) -> Option<i64> {
     use rusqlite::OptionalExtension;
 
     let conn = db.lock();
-    // 两层 Option：外层"这行在不在"（.optional() 把 QueryDne 换成 None），
-    // 内层是那一列本身可空
+    // 两层 Option：外层是这行在不在，内层是那一列可空
     let found: Option<Option<i64>> = conn
         .query_row(
             "SELECT reminded_at FROM stickies WHERE id = ?1",
@@ -144,6 +146,10 @@ fn fired_for(db: &Db, id: &str) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
+    fn off() -> crate::data::private::PrivateVault {
+        crate::data::private::PrivateVault::disabled("reminder")
+    }
+
     use super::*;
 
     const HOUR: i64 = 60 * 60 * 1000;
@@ -247,17 +253,17 @@ mod tests {
     fn 扫描捞得到_勾完成的捞不到() {
         let db = db_with_schema();
         let now = 10 * DAY_MS;
-        crate::db::query::sticky::upsert(&db, reminder_row("s1", Some(now - HOUR), "none"))
+        crate::db::query::sticky::upsert(&db, &off(), reminder_row("s1", Some(now - HOUR), "none"))
             .expect("写到期提醒");
-        crate::db::query::sticky::upsert(&db, reminder_row("s2", Some(now + HOUR), "none"))
+        crate::db::query::sticky::upsert(&db, &off(), reminder_row("s2", Some(now + HOUR), "none"))
             .expect("写未来提醒");
         let mut done = reminder_row("s3", Some(now - HOUR), "none");
         done.done_at = Some(now);
-        crate::db::query::sticky::upsert(&db, done).expect("写已勾掉的");
+        crate::db::query::sticky::upsert(&db, &off(), done).expect("写已勾掉的");
         // 非 reminder 类型就算填了 due_at 也不该响
         let mut text = reminder_row("s4", Some(now - HOUR), "none");
         text.content_type = "text".into();
-        crate::db::query::sticky::upsert(&db, text).expect("写文本便签");
+        crate::db::query::sticky::upsert(&db, &off(), text).expect("写文本便签");
 
         let got = pending(&db, now).expect("扫描");
         assert_eq!(
@@ -268,6 +274,49 @@ mod tests {
         assert_eq!(got[0].occurrence, now - HOUR);
         assert_eq!(got[0].title, "买菜");
         assert_eq!(got[0].theme, "yellow", "卡要跟着这张纸的颜色画，这一列不能不捞");
+    }
+
+    /// 「稍后再响」那条路：推后 + 清标记，下一轮扫描要又能捞得到；勾掉的与非 reminder 的不许被动过
+    #[test]
+    fn 稍后再响推后十分钟并重新生效() {
+        let db = db_with_schema();
+        let now = 10 * DAY_MS;
+        crate::db::query::sticky::upsert(&db, &off(), reminder_row("s1", Some(now - HOUR), "none"))
+            .expect("写到期提醒");
+        let mut done = reminder_row("s2", Some(now - HOUR), "none");
+        done.done_at = Some(now);
+        crate::db::query::sticky::upsert(&db, &off(), done).expect("写已勾掉的");
+        mark(&db, "s1", now - HOUR).expect("记这次弹过");
+        assert!(pending(&db, now).expect("扫").is_empty(), "弹过就不该再捞到");
+
+        snooze(&db, "s1", now).expect("稍后再响");
+        assert!(
+            !pending(&db, now + SNOOZE_MS).expect("十分钟后扫").is_empty(),
+            "推到的那一刻该重新成为待响"
+        );
+        assert!(pending(&db, now).expect("现在扫").is_empty(), "还没到点不许提前响");
+        let row = crate::db::query::sticky::get(&db, &off(), "s1")
+            .expect("读")
+            .expect("行在");
+        assert_eq!(row.due_at, Some(now + SNOOZE_MS));
+        assert_eq!(
+            fired_for(&db, "s1"),
+            None,
+            "标记没清就会因为 occurrence 相同而永远不再响"
+        );
+
+        // 勾掉的那张不是"待办"，稍后再响不该把它复活
+        snooze(&db, "s2", now).expect("对勾掉的什么也不做");
+        assert_eq!(
+            crate::db::query::sticky::get(&db, &off(), "s2")
+                .expect("读")
+                .expect("行在")
+                .due_at,
+            Some(now - HOUR),
+            "due_at 不许被动"
+        );
+        // 不存在的那张：写 0 行，不报错也不崩
+        snooze(&db, "没有这张", now).expect("不存在也不炸");
     }
 
     #[test]
@@ -283,8 +332,8 @@ mod tests {
             .expect("建组");
         let mut member = reminder_row("s1", Some(now - HOUR), "none");
         member.group_id = Some("g1".into());
-        crate::db::query::sticky::upsert(&db, member).expect("写组员");
-        crate::db::query::sticky::upsert(&db, reminder_row("s2", Some(now - HOUR), "none"))
+        crate::db::query::sticky::upsert(&db, &off(), member).expect("写组员");
+        crate::db::query::sticky::upsert(&db, &off(), reminder_row("s2", Some(now - HOUR), "none"))
             .expect("写散着的");
 
         let got = pending(&db, now).expect("扫描");
@@ -305,7 +354,7 @@ mod tests {
         let db = db_with_schema();
         let now = 10 * DAY_MS;
         let row = reminder_row("s1", Some(now - HOUR), "none");
-        crate::db::query::sticky::upsert(&db, row.clone()).expect("写");
+        crate::db::query::sticky::upsert(&db, &off(), row.clone()).expect("写");
         let occurrence = now - HOUR;
 
         assert_eq!(pending(&db, now).expect("扫").len(), 1);
@@ -314,17 +363,16 @@ mod tests {
         assert_eq!(fired_for(&db, "s1"), Some(occurrence));
 
         // 关键一条：前端一次普通保存（同一个 due_at 原样写回）不许把记号冲没
-        crate::db::query::sticky::upsert(&db, row.clone()).expect("再存一次");
+        crate::db::query::sticky::upsert(&db, &off(), row.clone()).expect("再存一次");
         assert_eq!(
             fired_for(&db, "s1"),
             Some(occurrence),
             "upsert 的列清单里没有 reminded_at，保存不该动它"
         );
 
-        // 改了到期时间 = 新的发生点 = 自动重新生效
         let mut moved = row;
         moved.due_at = Some(now - 2 * HOUR);
-        crate::db::query::sticky::upsert(&db, moved).expect("改时间");
+        crate::db::query::sticky::upsert(&db, &off(), moved).expect("改时间");
         assert_eq!(pending(&db, now).expect("扫").len(), 1, "改完要能再响");
     }
 }

@@ -1,16 +1,9 @@
-// 私密层自动上锁 — 「便签窗内 N 分钟没有操作就锁」。
-//
-// 时钟为什么住 Rust 这一侧：便签窗可能被全部收起、面板窗可能正开着，只有这里能给出
-// 一个跨窗唯一的答案。前端只负责"我在便签里动了一下"这一声（命令
-// `private_note_activity`，前端自己节流到 ≤每 5 秒一次）。
-//
-// 档位读 settings 的 `private.auto_lock_min`：显式 "0" 才算不锁，缺键与脏值回到 5 分钟
-// （与设置窗那排按钮的默认档同一个数）。这条与 `sticky.auto_size` 的"脏值按关"
-// 口径**反过来**：那是一条会改变窗体行为的开关，脏值打开它比让它关着难查；
-// 这一条是保护隐私的，脏值把它悄悄关掉，用户看到的是"锁没锁上"，比按默认锁上危险得多。
-//
-// 走一条自己的线程而不是 `tauri::async_runtime::spawn`：与 `reminders::spawn` 同一条
-// 理由——每轮要睡十几秒的循环放在异步运行时里等于长期占掉一格 worker。
+// 私密层自动上锁 — 「**揭开的那几张**，便签窗内 N 分钟没有操作就一起蒙回」。
+// 时钟数的是"最近一次有人在便签里动手"；到点一次收回到全部（`private::lock`），不留"只锁几张"的半动作。
+// 住 Rust 这一侧：便签窗可能全收起、面板窗可能开着，只有这里能给跨窗唯一的答案；前端只报"动了一下"。
+// 档位 `private.auto_lock_min`：显式 "0" 才不锁，缺键与脏值回默认 5 分钟（与设置窗默认档同一个数）。
+// 脏值按默认而非"关掉"（与 `sticky.auto_size` 相反）：这条保护隐私，悄悄关掉比按默认锁上危险得多。
+// 走独立线程而非 `tauri::async_runtime::spawn`：每轮睡十几秒的循环等于长期占掉一格 worker（同 `reminders::spawn`）。
 
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
@@ -54,19 +47,17 @@ pub fn minutes_from(stored: Option<String>) -> i64 {
     }
 }
 
-/// 到点该不该锁。纯函数，判定只问这一格（线程那圈壳没有可测的东西）。
-/// `last == 0`（起点还没摆过）一律不锁——那时"多久没动"这个问题还没有答案。
-fn should_lock(now: i64, last: i64, minutes: i64, unlocked: bool) -> bool {
-    unlocked && minutes > 0 && last > 0 && now - last >= minutes * 60_000
+/// 到点该不该锁。`last == 0`（起点还没摆过）一律不锁——那时"多久没动"这个问题还没有答案。
+fn should_lock(now: i64, last: i64, minutes: i64, has_open: bool) -> bool {
+    has_open && minutes > 0 && last > 0 && now - last >= minutes * 60_000
 }
 
 /// 起循环。**必须在 `manage::<NoteIdle>` 与 `manage::<PrivateVault>` 之后调用**。
 pub fn spawn(app: AppHandle) {
     std::thread::spawn(move || loop {
         std::thread::sleep(CHECK_EVERY);
-        // 上锁这个动作在三个 State 借用还活着时做，广播留到外面发（emit 要的
-        // AppHandle 正是它们借出来的那个）。主库没开成（应用照常起，走的是明确
-        // 错误界面）或状态没就位，这一轮整个跳过。
+        // 上锁在三个 State 借用还活着时做，广播留到外面发（emit 要的 AppHandle 正是它们借出来的）。
+        // 主库没开成或状态没就位，这一轮整个跳过。
         let mut just_locked: Option<i64> = None;
         if let (Some(db), Some(vault), Some(idle)) = (
             app.try_state::<Db>(),
@@ -81,7 +72,7 @@ pub fn spawn(app: AppHandle) {
                 let minutes = minutes_from(
                     settings::get(db.inner(), AUTO_LOCK_SETTING_KEY).ok().flatten(),
                 );
-                if should_lock(now, idle.last(), minutes, vault.is_unlocked()) {
+                if should_lock(now, idle.last(), minutes, vault.any_revealed()) {
                     private::lock(&vault);
                     just_locked = Some(minutes);
                 }
@@ -93,7 +84,7 @@ pub fn spawn(app: AppHandle) {
             let _ = app.emit("store:private-changed", "autolock");
             log::info(
                 "autolock",
-                &format!("便签窗内 {minutes} 分钟无操作，私密层已自动上锁"),
+                &format!("便签窗内 {minutes} 分钟无操作，揭开的那几张已经蒙回"),
             );
         }
     });

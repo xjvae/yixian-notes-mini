@@ -1,9 +1,6 @@
-// 私密层状态 — "配没配过 / 解没解锁"这两格事实的 owner（真身在 Rust 内存里，
-// 这里的只是订阅面）。便签窗的遮罩、标记私密的引导、托盘锁定都读它。
-//
-// 跨窗同步：Rust 在每条私密写命令后广播 `store:private-changed`，本模块收到就重读
-// 状态并通知订阅者；store 侧由 boot 接了 onPrivateLayerChange → refreshStore，
-// 于是"解锁成功"和"锁定"都会让便签内容即时合并/隐去。
+// 私密层状态 — "配没配过 + 现在开着哪几张"的订阅面（真身在 Rust 内存里）。遮罩、引导、托盘锁定都读它。
+// 逐张模型：没有全局 unlocked 这一格，只有已揭开的 id 列表；同一屏可以两扇窗摊着真身、其余蒙着。
+// 跨窗同步：Rust 在每条私密写命令后广播 store:private-changed，收到就重读状态并通知订阅者。
 
 import { useSyncExternalStore } from "react";
 import { listen } from "@/platform/bridge";
@@ -15,16 +12,19 @@ import { logger } from "@/platform/logger";
 const SCOPE = "private-state";
 
 export interface PrivateLayerState {
-  /** 已设置私密密码 */
   active: boolean;
-  /** 当前会话已解锁 */
-  unlocked: boolean;
+  /** 封套读不出来：不是"没设置"，是"有东西但打不开"，口令窗据此只给重置这一条出路 */
+  damaged: boolean;
+  revealed: readonly string[];
 }
 
-let state: PrivateLayerState = { active: false, unlocked: false };
+let state: PrivateLayerState = { active: false, damaged: false, revealed: [] };
 let version = 0;
 let initialized = false;
 const listeners = new Set<() => void>();
+/** 持有解密字节的模块（如 use-media 的图）在收回时要抹掉自己那份，在这里登记。
+ *  不直接 import：这一层在 `features/` 之下，反向依赖会成环 */
+const scrubbers = new Set<() => void>();
 
 function emit(): void {
   version += 1;
@@ -34,11 +34,24 @@ function emit(): void {
 async function refetch(): Promise<void> {
   try {
     const status: PrivateStatus = await privateStatus();
-    state = { active: status.configured, unlocked: status.unlocked };
+    const before = new Set(state.revealed);
+    state = {
+      active: status.configured,
+      damaged: status.damaged,
+      revealed: status.revealed,
+    };
+    // 只在真的有张被收回那一刻擦：广播是无条件发的，拿它当擦除时机会把缓存清得莫名其妙，
+    // 漏掉这一次就是留着明文等人取。收回只有 hide_all 一条路，整层字节一起擦就够
+    if (state.revealed.length < before.size) for (const scrub of scrubbers) scrub();
     emit();
   } catch (error) {
     logger.caught(SCOPE, "读私密层状态失败", error);
   }
+}
+
+export function registerPrivateScrub(scrub: () => void): () => void {
+  scrubbers.add(scrub);
+  return () => scrubbers.delete(scrub);
 }
 
 /** 挂载前调用一次（幂等）。之后状态变化全靠广播驱动。 */
@@ -51,7 +64,7 @@ export async function initPrivateState(): Promise<void> {
   });
 }
 
-/** 私密层事件后主动重读（解锁窗自己提交成功时用，不等广播往返） */
+/** 私密层事件后主动重读（口令窗自己提交成功时用，不等广播往返） */
 export async function syncPrivateState(): Promise<void> {
   await refetch();
 }
@@ -64,8 +77,14 @@ export function isPrivateLayerActive(): boolean {
   return state.active;
 }
 
-export function isPrivateUnlocked(): boolean {
-  return state.unlocked;
+/** **这一张**开着吗；"有没有任何张开着"是另一格，问 hasRevealed */
+export function isRevealed(id: string): boolean {
+  return state.revealed.includes(id);
+}
+
+/** 有没有任何一张开着。自动上锁那一条时钟与 `flushNow` 的时机问这一格 */
+export function hasRevealed(): boolean {
+  return state.revealed.length > 0;
 }
 
 export function subscribe(listener: () => void): () => void {
@@ -73,7 +92,7 @@ export function subscribe(listener: () => void): () => void {
   return () => listeners.delete(listener);
 }
 
-/** 订阅别名：语义是"私密层状态变了"，boot 拿它接 refreshStore */
+/** 订阅别名：boot 拿它接 refreshStore */
 export const onPrivateLayerChange = subscribe;
 
 function getVersion(): number {
@@ -85,14 +104,12 @@ export function usePrivateState(): PrivateLayerState {
   return state;
 }
 
-/**
- * 遮罩态的唯一口径：私密 且（没配过 或 没解锁）。真身不在内存里 ——
- * 标题、正文、标签，以及侧签上那个用户自己挑的图标，都算泄露面，所以谁要画遮罩
- * 都问这一处，不许在视图里各写一遍 `private && !unlocked`。
- */
+/** 遮罩态的唯一口径：私密 且（没配过 或 **这一张没揭开**）——标题、正文、标签、侧签图标都是泄露面，
+ *  谁要画遮罩都问这一处，不许在视图里各写一遍。没配过也蒙（内容还没被保护过），
+ *  界面靠 `active` 把它与"锁着"分开说（引导分岔） */
 export function isMasked(
-  note: Pick<StickyNote, "private">,
+  note: Pick<StickyNote, "id" | "private">,
   priv: PrivateLayerState,
 ): boolean {
-  return note.private && (!priv.active || !priv.unlocked);
+  return note.private && !priv.revealed.includes(note.id);
 }

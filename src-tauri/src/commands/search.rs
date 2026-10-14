@@ -3,13 +3,13 @@
 use tauri::State;
 
 use crate::db::pool::Db;
-use crate::db::query::search::{self, SearchHit};
+use crate::db::query::search::{self, SearchOutcome};
 use crate::support::error::AppResult;
 
 use super::run_db;
 
 #[tauri::command]
-pub async fn search_query(db: State<'_, Db>, query: String) -> AppResult<Vec<SearchHit>> {
+pub async fn search_query(db: State<'_, Db>, query: String) -> AppResult<SearchOutcome> {
     let db = db.inner().clone();
     run_db(db, move |db| search::search(db, &query)).await
 }

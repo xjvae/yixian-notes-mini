@@ -1,28 +1,24 @@
 // media — 便签正文里的图片。表和"为什么住库不住目录"见 migrations/0005_media.sql。
-//
-// 这一层只管字节进字节出：`enc` 只是"这行是密文"的记号，本层不知道密钥、不碰密码学
-// （加解密在命令层，走 data/private.rs 的媒体密钥）。这样查询层能被单测穷举，
-// 不必先配一遍口令。
+// 本层只管字节进字节出，`enc` 只是"这行是密文"的记号——不知道密钥、不碰密码学（加解密在命令层）。
+// 正因如此查询层能被单测穷举，不必先配一遍口令。
 
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use super::super::pool::Db;
 use crate::support::error::{AppError, AppResult};
 
-/// 单张字节上限。前端粘贴/拖入前先用 canvas 缩到最长边 2560，还能超这个数的是
-/// 本来就巨大的图（几千万像素的相机图），那种图贴进便签没意义
+/// 单张字节上限。前端已按 `data/image-input.ts` 的 `MAX_EDGE` 缩过一轮（那条与
+/// `MAX_BYTES` 都有对照测试钉着），还能超的基本是几千万像素的相机图，贴进便签没意义
 pub const MAX_BYTES: usize = 5 * 1024 * 1024;
 
-/// 一张便签最多几张图。正文上限 2000 字，而一条 `![截图](media://m…)` 引用本身
-/// 就占 20+ 字 —— 20 张吃掉 ~460 字，再多正文就没地方写字了，这条上限其实正文先到
+/// 一张便签最多几张图。正文上限 2000 字，一条 `media://` 引用占 20+ 字，20 张吃掉 ~460 字，实际正文先到顶
 pub const MAX_PER_NOTE: usize = 20;
 
-/// mime 白名单。`image/svg+xml` 刻意不在内：它是文本格式，能带脚本，
-/// 白名单里少一类就少一处要记住的例外（要看矢量图，截成 png 再贴）
+/// mime 白名单。`image/svg+xml` 刻意不在内：文本格式能带脚本（要看矢量图截成 png 再贴）
 pub const ALLOWED_MIME: &[&str] =
     &["image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp"];
 
-/// 形状与宽高合法吗。宽高是给渲染层占位用的（没拿到字节前也能按比例的框）
+/// 形状与宽高合法吗（宽高给渲染层占位用）
 pub fn check(mime: &str, byte_len: usize, existing: i64) -> AppResult<()> {
     if !ALLOWED_MIME.contains(&mime) {
         return Err(AppError::new(
@@ -121,11 +117,12 @@ pub fn count_for_note(db: &Db, note_id: &str) -> AppResult<i64> {
     )?)
 }
 
-/// 一张便签的全部图（按写入顺序）。私密层翻转加密状态时要逐行重过一遍密文
-pub fn list_for_note(db: &Db, note_id: &str) -> AppResult<Vec<MediaRow>> {
+/// 一张便签的全部图（按写入顺序）。私密翻转与"揭开那一张时重裹它名下的密文"都要用，
+/// 两处都在事务里问，所以只收已拿着的锁（`Db` 不可重入，而那一拍必须与写入同事务——
+/// 图重裹到一半而键行没落下，那张就永远解不开了）
+pub fn list_for_note_conn(conn: &Connection, note_id: &str) -> AppResult<Vec<MediaRow>> {
     // 先把那把锁落成变量：`db.lock().prepare(..)` 会让 guard 在语句结束时就被丢掉，
     // 而 stmt 还借着它里面的连接（E0716）
-    let conn = db.lock();
     let sql = format!("SELECT {COLUMNS} FROM media WHERE note_id = ?1 ORDER BY created_at, id");
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt
@@ -134,20 +131,30 @@ pub fn list_for_note(db: &Db, note_id: &str) -> AppResult<Vec<MediaRow>> {
     Ok(rows)
 }
 
-/// 换掉一行的字节与加密标记（id 与宽高不动）。私密翻转专用
-pub fn replace_bytes(db: &Db, id: &str, bytes: &[u8], enc: bool) -> AppResult<usize> {
-    Ok(db.lock().execute(
+/// 一张便签名下**已经是密文**的那些（换钥匙时要逐行重裹的那批）
+pub fn encrypted_for_note_conn(conn: &Connection, note_id: &str) -> AppResult<Vec<MediaRow>> {
+    let sql =
+        format!("SELECT {COLUMNS} FROM media WHERE note_id = ?1 AND enc = 1 ORDER BY created_at, id");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map([note_id], materialize)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// 换掉一行的字节与加密标记（id 与宽高不动）。私密翻转专用：调用方那一发必须和
+/// 同批其余行同属一个事务（`commands/media.rs::media_set_private`），所以只收已拿着的锁
+pub fn replace_bytes_conn(conn: &Connection, id: &str, bytes: &[u8], enc: bool) -> AppResult<usize> {
+    Ok(conn.execute(
         "UPDATE media SET bytes = ?2, enc = ?3 WHERE id = ?1",
         params![id, bytes, enc as i64],
     )?)
 }
 
-/// 清掉全部密文图。私密层**重置**之后要跑一次：重置造的是新的媒体密钥，
-/// 旧的那些字节永远解不开了，留着既占地方又让人以为"图还在"
-pub fn purge_encrypted(db: &Db) -> AppResult<usize> {
-    Ok(db
-        .lock()
-        .execute("DELETE FROM media WHERE enc = 1", [])?)
+/// 清掉全部密文图。私密层重置后跑一次：新 master 下旧字节永远解不开，留着既占地方又误导。
+/// 只收已拿着的锁：重置那一拍要把"清空"与"写标记"放进同一个事务
+pub fn purge_encrypted_conn(conn: &Connection) -> AppResult<usize> {
+    Ok(conn.execute("DELETE FROM media WHERE enc = 1", [])?)
 }
 
 #[cfg(test)]
@@ -192,7 +199,11 @@ mod tests {
         save(&db, &row("m2", "s1", true)).expect("存密文");
         assert!(!get(&db, "m1").expect("读").expect("有").enc);
         assert!(get(&db, "m2").expect("读").expect("有").enc);
-        assert_eq!(purge_encrypted(&db).expect("清密文"), 1, "只带走 enc=1");
+        assert_eq!(
+            purge_encrypted_conn(&db.lock()).expect("清密文"),
+            1,
+            "只带走 enc=1"
+        );
         assert!(get(&db, "m1").expect("读").is_some(), "明文那张不动");
         assert!(get(&db, "m2").expect("读").is_none());
     }
@@ -217,7 +228,7 @@ mod tests {
             };
             save(&db, &row).expect("存");
         }
-        let ids: Vec<String> = list_for_note(&db, "s1")
+        let ids: Vec<String> = list_for_note_conn(&db.lock(), "s1")
             .expect("列")
             .into_iter()
             .map(|row| row.id)

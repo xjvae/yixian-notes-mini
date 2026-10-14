@@ -1,6 +1,6 @@
 [package]
 name = "yixian-notes-mini"
-version = "1.2.7"
+version = "1.2.12"
 description = "一闲笔记 mini — 桌面便签"
 authors = ["梦一闲"]
 edition = "2024"
@@ -60,7 +60,9 @@ tauri-plugin-notification = "2.5.1"
 custom-protocol = ["tauri/custom-protocol"]
 
 [profile.release]
-opt-level = "z"
+# 3 而不是 "z"：硬线 12 MB，实测装出来 2.93 MB（比 "z" 那版长 35%），
+# 换的是 Argon2 派生与逐张封解这类 CPU 活的速度
+opt-level = 3
 lto = true
 codegen-units = 1
 strip = true

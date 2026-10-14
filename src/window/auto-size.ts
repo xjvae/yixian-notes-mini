@@ -15,8 +15,10 @@
 // 要几千像素高，不设上限就能把整屏吃掉、下面的字既看不见也滚不动。
 // 超出的部分由正文那一格自己滚（阅读态本来就 overflow-y-auto）。
 
-/** 与 float.rs 的 `MIN_SIZE`（220×200）同值：自动不许把窗缩到手都捏不住 */
-export const AUTO_MIN = { width: 220, height: 200 } as const;
+import { STICKY_MIN_SIZE } from "@/data/window-geometry";
+
+/** 与 float.rs 的 `MIN_SIZE` 同值（走 `data/window-geometry.ts` 那一份）：自动不许把窗缩到手都捏不住 */
+export const AUTO_MIN = STICKY_MIN_SIZE;
 
 /** 作者拍的固定上限：一屏至少还摆得下两张高的 */
 export const AUTO_MAX = { width: 900, height: 900 } as const;

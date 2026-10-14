@@ -1,13 +1,7 @@
-// 便签右键菜单的判定 — "右键点在什么上"→"该给哪几项"。纯函数，不碰 DOM。
-//
-// 为什么单独拎出来：菜单项本身是几行 JSX，但"随对象变"这套规则（选中文本给复制、
-// 链接给打开+复制、图给复制+删掉，最后都接同一串便签通用项）是最容易改乱的地方。
-// 写成纯函数就能把每条分支钉进用例，而不是靠手点五种位置去回忆规则。
-//
-// 尾巴那几项是**同一串**（作者拍板"随对象变"，但通用项不该跟着目标消失）：
-// 加一张图 / 复制正文 / 历史版本 / 标记或取消私密 / 收起为标题栏 / 删除便签。
-// 收起只在单窗有——叠窗没有标题栏形态，所以 `canCollapse` 由调用方说，这里不猜。
-// 历史版本不分私密：私密的版本住封套里（锁着读不到），入口照给（作者拍的）。
+// 便签右键菜单的判定 — "右键点在什么上"→"该给哪几项"。纯函数，不碰 DOM——为的是每条分支都能钉进用例，
+// 而不是靠手点五种位置去回忆规则。
+// 尾巴那几项是**同一串**（加图 / 复制正文 / 历史版本 / 私密 / 收起 / 删除）：通用项不随目标消失；
+// 收起只在单窗有，由调用方传 `canCollapse`，这里不猜。历史版本不分私密——私密版本住封套里锁着读不到，入口照给。
 // 危险项（删除便签、删掉这张图）一律排在各自那一段的最后，不让人闭着眼点到。
 
 import type { RowRef } from "@/features/sticky/row-target";
@@ -21,21 +15,18 @@ export type MenuHit =
    */
   | { kind: "text"; selected: string; range: { start: number; end: number } | null }
   /**
-   * 选中了**某一条**里的字（清单条目、时间轴那条记录）。区间是那条自己的文本区间，
-   * 写回也写进那条（见 `row-target.ts` 为什么要抽这一层）。
+   * 选中了**某一条**里的字（清单条目、时间轴那条记录）。区间是那条自己的文本区间，写回也写进那条。
    */
   | { kind: "row"; row: RowRef; selected: string; range: { start: number; end: number } }
   /**
    * 编辑态那块 textarea 里选中了字（区间直接来自 `selectionStart/End`，天生精确）。
-   * 只在**有选区**时才用这一档：空白处右键要留给系统菜单，那儿才是粘贴/撤销/拼写
-   * 的地方，我们给不了那几样（作者拍板"不要粘贴，只给不需要读的"）。
+   * 只在**有选区**时才用这一档：空白处右键要留给系统菜单——粘贴/撤销/拼写在那儿，我们给不了那几样。
    */
   | { kind: "editor"; selected: string; range: { start: number; end: number } }
   | { kind: "link"; href: string }
   /**
-   * 本机图库里的图（media:// 那句引用对应的字节）。
-   * `row` = 这张图在清单/时间轴的某一条里（null = 在正文里）——决定"删掉这张图"
-   * 那句引用要从哪儿摘。
+   * 本机图库里的图（media:// 那句引用对应的字节）。`row` = 这张在清单/时间轴的某一条里
+   * （null = 在正文里）——决定"删掉这张图"那句引用要从哪儿摘。
    */
   | { kind: "image"; mediaId: string; row: RowRef | null }
   /** 远程图芯片（不自动加载那一类，href 是 http/https） */
@@ -50,10 +41,8 @@ export interface NoteState {
   /** 手里这张图那句引用在不在（正文或那一条里），在才给"删掉这张图" */
   canDeleteImage: boolean;
   /**
-   * "复制这一块文本"那一项叫什么。四类便签的正文不在同一个字段（文本/提醒是
-   * `body`、清单是 `items[].text`、时间轴是 `timeline[].text`，见
-   * `data/note-types.ts` 的 `plainBody`），所以文案得跟着类型走 ——
-   * 不然清单上写着"复制正文"、复制出来是空串。
+   * "复制这一块文本"那一项叫什么。四类便签的正文不在同一个字段（文本/提醒是 `body`、清单是 `items[].text`、
+   * 时间轴是 `timeline[].text`，见 `data/note-types.ts` 的 `plainBody`），文案得跟着类型走——不然清单上写"复制正文"、复制出来是空串。
    */
   bodyLabel: string;
 }
@@ -112,15 +101,13 @@ export function menuFor(hit: MenuHit, note: NoteState): MenuAction[] {
     case "text":
       if (hit.selected.trim() === "") break;
       head.push({ id: "copy-selection", label: "复制选中文字" });
-      // 只有对得上正文区间的选中才给"变成链接"：包链接是改正文的动作，
-      // 位置算不准就不该提供（选了跨到代码/图/条目上，range 就是 null）
+      // 只有对得上正文区间的选中才给"变成链接"：包链接是改正文的动作，位置算不准就不该提供
       if (hit.range !== null) {
         head.push({ id: "add-link", label: "把选中变成链接" });
       }
       break;
     case "row":
-      // 条目里的选中与正文同一套：区间是那条自己的，包出来的那句 `[字](地址)`
-      // 也只有那条认（识别口径本来就和正文是同一份）
+      // 条内包链接与正文同一套：区间是那条自己的，包出来的那句 `[字](地址)` 也只有那条认
       if (hit.selected.trim() === "") break;
       head.push(
         { id: "add-link", label: "把选中变成链接" },
@@ -146,8 +133,7 @@ export function menuFor(hit: MenuHit, note: NoteState): MenuAction[] {
       }
       break;
     case "editor":
-      // 编辑态这一档：**不给"粘贴"**（那需要 clipboard-read 权限，WebView2 上常常拿不到，
-      // 引插件才能稳）。粘贴/撤销/拼写请在这块空白处右键，那是系统菜单的地盘。
+      // 不给"粘贴"：那要 clipboard-read 权限，WebView2 上常常拿不到（引插件才能稳）
       if (hit.range.end > hit.range.start) {
         head.push(
           { id: "add-link", label: "把选中变成链接" },

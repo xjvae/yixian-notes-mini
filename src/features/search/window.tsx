@@ -1,4 +1,4 @@
-// 搜索窗 — 输入即查（150ms 防抖），点结果拉起浮窗，Esc 关窗。
+// 搜索窗 — 输入即查（150ms 防抖），点结果拉起浮窗，Esc 关窗。空查询 = 最近 50 张。
 // 检索语义在后端（query/search.rs）：子串匹配、标题命中优先、私密与已删不进结果。
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -7,40 +7,42 @@ import { WindowChrome } from "@/ui/window-chrome";
 import { noteTypeLabel } from "@/data/note-types";
 import { themeOf } from "@/data/theme";
 import { displayTitle } from "@/data/note-types";
+import { plainPreview } from "@/data/body-parse";
 import { closeSearchWindow, openFloatingSticky, searchQuery } from "@/platform/commands";
-import type { SearchHit } from "@/platform/contracts";
+import type { SearchHit, SearchOutcome } from "@/platform/contracts";
 
 const PANEL_BG = "var(--panel-bg)";
 const PANEL_ACCENT = "var(--panel-ink)";
 const DEBOUNCE_MS = 150;
+const SNIPPET_MAX = 60;
 
+/** 摘要的料：正文有空就退到条目文本上——清单类和时间轴类的正文本来就住在那 */
 function snippet(hit: SearchHit): string {
-  const source = hit.body.trim() !== "" ? hit.body : "（无正文）";
-  return source.length > 60 ? `${source.slice(0, 60)}…` : source;
+  if (hit.body.trim() !== "") return plainPreview(hit.body, SNIPPET_MAX);
+  const lines = [
+    ...hit.items.map((item) => item.text),
+    ...hit.timeline.map((entry) => entry.text),
+  ];
+  return plainPreview(lines.join("、"), SNIPPET_MAX) || "（还没写东西）";
 }
 
 export function SearchWindow() {
   const [query, setQuery] = useState("");
-  const [hits, setHits] = useState<SearchHit[] | null>(null);
+  const [result, setResult] = useState<SearchOutcome | null>(null);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const runSearch = useCallback((value: string): void => {
     void searchQuery(value)
-      .then((results) => {
-        setHits(results);
+      .then((outcome) => {
+        setResult(outcome);
         setError(null);
       })
       .catch((err: unknown) => setError(String(err)));
   }, []);
 
   useEffect(() => {
-    const trimmed = query.trim();
-    if (trimmed === "") {
-      // 空查询不取数：展示层用 visibleHits 派生空态，这里不用同步 setState
-      return;
-    }
-    const timer = setTimeout(() => runSearch(trimmed), DEBOUNCE_MS);
+    const timer = setTimeout(() => runSearch(query), DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [query, runSearch]);
 
@@ -67,8 +69,9 @@ export function SearchWindow() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  /** 空查询不展示任何结果（展示层派生，不走同步 setState） */
-  const visibleHits = query.trim() === "" ? null : hits;
+  /** null = 第一跳还没回来，先空着而不是报"还没有便签" */
+  const rows = result?.hits ?? null;
+  const locked = result?.privateSkipped ?? 0;
 
   return (
     <WindowChrome
@@ -98,14 +101,12 @@ export function SearchWindow() {
           </div>
         )}
         <div className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto">
-          {visibleHits === null || visibleHits.length === 0 ? (
+          {rows === null ? null : rows.length === 0 ? (
             <div className="mt-8 text-center text-xs text-[var(--panel-muted)]">
-              {query.trim() === ""
-                ? "输入两个字就能搜到正文中间的词；私密便签不参与搜索。"
-                : "没有命中的便签。"}
+              {query.trim() === "" ? "还没有便签。" : "没有命中的便签。"}
             </div>
           ) : (
-            visibleHits.map((hit) => {
+            rows.map((hit) => {
               const ink = themeOf(hit.theme);
               return (
                 <button
@@ -129,6 +130,12 @@ export function SearchWindow() {
             })
           )}
         </div>
+        {/* 锁着的没参与这件事要说出来：只报"没有命中"，人会觉得那张便签丢了 */}
+        {rows !== null && locked > 0 && (
+          <p className="shrink-0 text-center text-[11px] text-[var(--panel-muted)]">
+            另有 {locked} 张私密便签没参与
+          </p>
+        )}
       </div>
     </WindowChrome>
   );

@@ -22,13 +22,13 @@ import {
   Coffee,
   Flag,
   Bookmark,
-  History,
   Home,
   Key,
   Lightbulb,
   ListChecks,
   Lock,
   Music,
+  Milestone,
   Phone,
   Smile,
   Star,
@@ -37,12 +37,13 @@ import {
 } from "lucide-react";
 import type { StickyContentType, StickyNote } from "@/platform/contracts";
 
-/** 四类便签的默认图标（编辑器那条类型标记与签列的回落都用它） */
+/** 四类便签的默认图标（编辑器那条类型标记与签列的回落都用它）。
+ *  时间轴刻意不用 `History`：页脚那颗"历史版本"就是它，同一只页脚里不能出现两个同样字形 */
 export const TYPE_ICONS: Record<StickyContentType, LucideIcon> = {
   text: TextIcon,
   todo: ListChecks,
   reminder: AlarmClock,
-  timeline: History,
+  timeline: Milestone,
 };
 
 export interface NoteIconChoice {

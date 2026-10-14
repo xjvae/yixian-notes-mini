@@ -18,11 +18,15 @@ pub struct Bootstrap {
 }
 
 #[tauri::command]
-pub async fn get_bootstrap(db: State<'_, Db>) -> AppResult<Bootstrap> {
+pub async fn get_bootstrap(
+    db: State<'_, Db>,
+    vault: State<'_, PrivateVault>,
+) -> AppResult<Bootstrap> {
     let db = db.inner().clone();
-    run_db(db, |db| {
+    let vault = vault.inner().clone();
+    run_db(db, move |db| {
         Ok(Bootstrap {
-            stickies: sticky::list(db, false)?,
+            stickies: sticky::list(db, &vault, false)?,
         })
     })
     .await

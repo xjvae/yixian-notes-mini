@@ -8,7 +8,6 @@ import { RotateCcw, Trash2, X } from "lucide-react";
 import { WindowChrome } from "@/ui/window-chrome";
 import { displayTitle, noteTypeLabel } from "@/data/note-types";
 import { themeOf } from "@/data/theme";
-import { dropSealed } from "@/store/private-backend";
 import { requirePrivateUnlock } from "@/window/private-gate";
 import {
   closeTrashWindow,
@@ -26,6 +25,9 @@ const PANEL_ACCENT = "var(--panel-ink)";
 const CONFIRM_RESET_MS = 3000;
 /** 「一键清空」借用行级那套确认，需要一个撞不上便签 id 的哨兵键 */
 const CLEAR_ALL = "__clear_all__";
+/// 「清空整批」在口令门里的那张"意图凭据"。`private_verify` 只验身份、不开任何一张，
+/// 所以这一格不需要对上任一行——它只是让挂起的那一下与验过的那一声对得上号
+const BATCH = "__batch__";
 
 function formatDateTime(ms: number): string {
   const d = new Date(ms);
@@ -94,18 +96,31 @@ export function TrashWindow() {
       }
       if (confirmTimer.current !== null) clearTimeout(confirmTimer.current);
       setConfirmingId(null);
-      const ids = target === CLEAR_ALL ? privateIds : [target];
       const act = async (): Promise<void> => {
-        // 哨兵键那一支清的是整个回收站（所有软删行连图），别的只清这一行
+        // 哨兵键那一支清的是整个回收站（所有软删行），别的只清这一行。
+        // 图与私密内容（正文 + 那一串版本）由 Rust 在同一条删除里带走——删密文行
+        // 不需要密钥，所以锁着也清得干净，前端不必再补一刀
         if (target === CLEAR_ALL) await trashClearAll();
         else await stickyDelete(target, true);
-        await dropSealed(ids);
       };
+      // 删私密便签要口令，而且**一律再问一次**（这是他定的六道入口全要口令那条，
+      // 逐张解锁之后不因"那张正开着"而免问）。一键清空合并问一次：
+      // 那一刀要带走的是整批，问 N 遍只是噪音。
+      // `BATCH` 那个哨兵只是这一次挂起动作的凭据：`private_verify` 只验身份、
+      // 不碰任何一张，所以它不需要真的对上某一行
       const gated =
         target === CLEAR_ALL ? privateIds.length > 0 : privateIds.includes(target);
-      void (gated ? requirePrivateUnlock(act) : act()).catch((error: unknown) =>
-        setLoadError(String(error)),
-      );
+      const noteId = target === CLEAR_ALL ? BATCH : target;
+      void (
+        gated
+          ? requirePrivateUnlock({
+              noteId,
+              purpose: "delete",
+              action: act,
+              what: target === CLEAR_ALL ? "清空回收站里的私密便签" : `硬删 ${target}`,
+            })
+          : act()
+      ).catch((error: unknown) => setLoadError(String(error)));
     },
     [confirmingId, privateIds],
   );

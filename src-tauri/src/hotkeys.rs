@@ -1,17 +1,9 @@
-// 全局快捷键 — 逐条注册、逐条容忍失败：任何一条被占用都不许让启动失败
-// （曾经就是这条路径上的 `?` 把整个应用 panic 掉 = "装完打不开"）。
-//
-// 默认绑定是四条直达（Alt+1..4）加「唤起星环」的 Alt+Space。
-// 改键：settings 表 `hotkeys` 键存 JSON map（action → accelerator 字符串，
-// 空串 = 显式不绑），`app_set_hotkey` 落库并即时重绑，跨启动生效。
-//
+// 全局快捷键 — 逐条注册、逐条容忍失败：任何一条被占用都不许让启动失败（`?` 曾 panic 掉整个应用）。
+// 默认绑定：Alt+1..4 四条直达 + Alt+Space 唤星环。改键走 settings 表 `hotkeys` 的 JSON map
+// （action → accelerator，空串 = 显式不绑），`app_set_hotkey` 落库并即时重绑，跨启动生效。
 // 铁律：兄弟实例活着时本实例不注册（两份快捷键抢不出胜负），由 lib.rs 把关。
-//
-// 注册表记的是**事实**而不是愿望：每条连同"系统到底收没收"一起记。这条不是装饰——
-// 本机日志连着几天都是 `ring 的 Alt+Space 注册失败（可能被占用）：HotKey already
-// registered`（那句来自 RegisterHotKey 返回 ERROR_HOTKEY_ALREADY_REGISTERED，
-// 同表 Alt+1..4 全成功，所以是别的程序占着）。不记失败时 `list()` 查不到就回落默认键，
-// 设置窗于是照旧显示"Alt + 空格"，用户看不出这一条根本没绑上，只当功能坏了。
+// 注册表记**事实**而不是愿望：只记成功的话 `list()` 查不到就回落默认键，设置窗照旧显示"Alt + 空格"，
+// 用户看不出这一条根本没绑上——键被占用（本机 Alt+Space 就是被别人占着）也要如实记。
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -29,25 +21,21 @@ use crate::windows::{float, hide_all, ring, search, trash};
 
 pub const HOTKEYS_SETTING_KEY: &str = "hotkeys";
 
-/// (动作, 默认键)。顺序即设置界面的展示顺序（改键 UI 随设置窗热键节落地）。
-///
-/// 动作 id 与**托盘菜单的 id 同一条**（`hide-all` / `show-all`）：同一个动作用两个名字
-/// 迟早会分叉——菜单改了键位表里没改，就是"设置里那个键按了没反应"。
+/// (动作, 默认键)。顺序即设置界面的展示顺序。
+/// 动作 id 与**托盘菜单的 id 同一条**（`hide-all` / `show-all`）：同一个动作用两个名字迟早分叉。
 pub const DEFAULT_BINDINGS: &[(&str, &str)] = &[
     ("sticky", "Alt+1"),
     ("search", "Alt+2"),
     ("trash", "Alt+3"),
     ("settings", "Alt+4"),
     ("ring", "Alt+Space"),
-    // 收起 / 恢复全部便签。挑 6 与 7 是为了跟 1..4 那一族连着（5 被星环占了，
-    // 而星环那条 Alt+Space 在本机是被别人占着的——注册结果由 `bound` 说，不在这儿猜）
+    // 收起 / 恢复全部便签：挑 6 与 7 是为了跟 1..4 那一族连着（5 被星环占了）
     ("hide-all", "Alt+6"),
     ("show-all", "Alt+7"),
 ];
 
-/// 一条绑定的事实：请求过哪个键 + 系统有没有真的收下。
-/// `bound == false` 只可能来自系统的答复（键被占），不是"用户没配过"——
-/// 界面上必须把这两件事分开，否则就是一行"看着已绑、按下去没反应"的键位。
+/// 一条绑定的事实：请求过哪个键 + 系统有没有真的收下。`bound == false` 只可能来自系统的答复
+/// （键被占），不是"用户没配过"——界面上必须分开这两件事，否则就是"看着已绑、按下去没反应"。
 #[derive(Clone, Debug)]
 struct Binding {
     key: String,
@@ -63,9 +51,8 @@ impl HotkeyRegistry {
         self.lock().get(action).map(|b| b.key.clone())
     }
 
-    /// 当前生效的绑定表（改键 UI 用）：action →（键, 有没有绑上）。
-    /// 没记过的一条回落**默认键 + 没绑上**：注册表为空 = 一条都没注册过
-    /// （`register_all` 还没跑到，或这个实例压根不注册），说"已绑"就是撒谎。
+    /// 当前生效的绑定表（改键 UI 用）：action →（键, 有没有绑上）。没记过的一条回落**默认键 +
+    /// 没绑上**：注册表为空 = 一条都没注册过（`register_all` 还没跑到，或这个实例压根不注册）。
     pub fn list(&self) -> Vec<(String, String, bool)> {
         let map = self.lock();
         DEFAULT_BINDINGS
@@ -130,8 +117,7 @@ pub fn register_all(app: &AppHandle, overrides: &HashMap<String, String>) {
             .unwrap_or_else(|| (*default_key).to_string());
         if key.trim().is_empty() {
             log::info("hotkeys", &format!("{action} 被显式停用"));
-            // 注册表里记空串：改键 UI 要能区分"显式停用"和"没配过"。
-            // 停用是用户要的结果，算绑好了（bound = true）
+            // 注册表记空串：改键 UI 要区分"显式停用"和"没配过"；停用是用户要的结果，算绑好了
             registry.set(action, Some(String::new()), true);
             continue;
         }
@@ -211,8 +197,7 @@ fn fire(app: &AppHandle, action: &str) {
             });
         }
         "hide-all" => {
-            // 不 spawn：这两条就是一串 hide()/show()，本身不 await 任何东西。
-            // 计数进日志（0 扇也记）——"按了没反应"要么是没绑上，要么是本来就没开着窗
+            // 不 spawn：这两条就是一串 hide()/show()，不 await 任何东西；计数进日志（0 扇也记）
             let n = hide_all::hide_all(app);
             log::info("hotkeys", &format!("Alt 收起全部便签：{n} 扇"));
         }
@@ -246,8 +231,7 @@ pub fn set_binding(app: &AppHandle, db: &Db, action: &str, key: &str) -> AppResu
         overrides.remove(action);
         // 显式停用要在覆盖表里留空串，否则回退到默认键
         overrides.insert(action.to_string(), String::new());
-        // 注册表也要跟着记空串：只改覆盖表的话，重启前这一行显示的还是刚解掉的那个键，
-        // 用户以为还绑着（覆盖表是重启后才读的那份，救不了当下这次）
+        // 注册表也要跟着记空串：覆盖表是重启后才读的那份，救不了当下这一行刚解掉的键
         registry.set(action, Some(String::new()), true);
     } else {
         if !bind(app, action, key) {
@@ -291,12 +275,9 @@ mod tests {
         assert!(bindings_override_from(Some("not json")).is_empty());
     }
 
-    /// 默认表的两条硬不变量：**每个动作都有个能解析的键，且没有两个动作抢同一个键**。
-    /// 撞车的症状是"其中一条按了永远没反应"（后注册的那条把前一条顶掉），
-    /// 而这件事在界面上完全看不出来。
-    ///
-    /// 故意**不**断条数：条数每轮都变，写死就是等着过期；整张表的顺序与内容由
-    /// `preview/hotkey-table.test.ts` 拿三份抄本一起比（漂了那边红）。
+    /// 钉住两条硬不变量：**每个动作都有个能解析的键，且没有两个动作抢同一个键**（撞车时后注册的
+    /// 把前一条顶掉，症状是"其中一条按了永远没反应"，界面上完全看不出来）。
+    /// 故意**不**断条数：条数每轮都变，写死就是等着过期；表内容由 `preview/hotkey-table.test.ts` 比三份抄本。
     #[test]
     fn 默认绑定表_动作不重键位不撞() {
         assert!(
@@ -324,8 +305,7 @@ mod tests {
         );
     }
 
-    /// 绑不上的那条留在表里、并标着没生效。反例就是原来的行为：只记成功，
-    /// `list()` 查不到就回落默认键，设置窗于是显示"Alt + 空格"而它根本没绑上
+    /// 钉住绑不上的那条留在表里并标着没生效（只记成功就会回落默认键冒充"已绑"）
     #[test]
     fn 没绑上的键仍留在表里且标着未生效() {
         let registry = HotkeyRegistry::default();
@@ -344,8 +324,7 @@ mod tests {
         );
     }
 
-    /// 空表 = 一条都没注册过（`register_all` 还没跑到）。键位照样回落默认值好让界面有东西
-    /// 显示，但每条都标没生效——这时说"已绑"就是撒谎
+    /// 钉住空表时键位照样回落默认值好让界面有东西显示，但每条都标没生效
     #[test]
     fn 空表回落默认键且全部标未生效() {
         let registry = HotkeyRegistry::default();

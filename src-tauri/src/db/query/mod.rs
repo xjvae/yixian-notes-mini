@@ -1,5 +1,6 @@
 pub mod group;
 pub mod media;
+pub mod private_note;
 pub mod reminder;
 pub mod revision;
 pub mod search;

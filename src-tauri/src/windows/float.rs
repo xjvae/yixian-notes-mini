@@ -31,11 +31,8 @@ pub fn group_label_for(gid: &str) -> String {
 }
 
 /// 收起档与展开档各自的「出生尺寸 + 原生下限」——单窗与叠窗**共用这一条**。
-///
-/// 收起那一档高是死的 62，而**必须同时把 `min_size` 摘掉**：builder 的
-/// `min_inner_size(220, 200)` 是在建窗那一刻生效的，62 会被当场夹回 200。
-/// 症状就是作者报的"收起态退出应用、重开后那条栏占一大块"——前端那条撤下限的
-/// effect 跑得再对也来不及，夹发生在窗出生之前。
+/// 收起档高是死的 62，**必须同时摘掉 `min_size`**：builder 的 min_inner_size(220,200)
+/// 在建窗那一刻生效，62 被当场夹回 200（夹发生在窗出生之前，前端撤下限的 effect 来不及）。
 pub fn mode_geometry(collapsed: bool, expand: (f64, f64)) -> ((f64, f64), Option<(f64, f64)>) {
     if collapsed {
         ((expand.0.min(BAR_MAX_WIDTH), BAR_HEIGHT), None)
@@ -47,7 +44,12 @@ pub fn mode_geometry(collapsed: bool, expand: (f64, f64)) -> ((f64, f64), Option
 /// 新建默认便签并开窗，返回新 id（托盘与命令共用这一条路径）
 pub async fn create_sticky(app: &AppHandle, db: Db) -> AppResult<String> {
     let id = gen_id();
-    sticky::upsert(&db, default_input(&id))?;
+    let vault = app
+        .try_state::<crate::data::private::PrivateVault>()
+        .ok_or_else(|| AppError::new("VAULT_MISSING", "私密层状态没就位"))?
+        .inner()
+        .clone();
+    sticky::upsert(&db, &vault, default_input(&id))?;
     open_sticky(app, &db, &id).await?;
     Ok(id)
 }
@@ -60,19 +62,17 @@ pub async fn open_sticky(app: &AppHandle, db: &Db, id: &str) -> AppResult<()> {
         let _ = existing.set_focus();
         return Ok(());
     }
-    let row = sticky::get(db, id)?
+    // 开窗只要摆位与归属，不解密（`list_raw`/`get_raw` 那一条口径）
+    let row = sticky::get_raw(db, id)?
         .ok_or_else(|| AppError::new("STICKY_MISSING", format!("便签 {id} 不存在")))?;
-    // 组员住叠窗（一叠一窗），不再单开一扇：搜索点结果、回收站恢复都走这条路，
-    // 否则同一张便签会在单窗和叠窗里各显形一次。
-    // 指向已删组的悬空成员按散着算——组行没了就当没组（见 query/group.rs 头部）。
+    // 组员住叠窗（一叠一窗），不再单开一扇：否则同一张便签在单窗和叠窗里各显形一次；指向已删组的悬空成员按散着算
     if let Some(gid) = row.group_id.as_deref()
         && group::exists(db, gid)?
     {
         // 带着"要看哪一张"进去：点结果/恢复点的就是这一张
         return open_group_stack(app, db, gid, Some(id)).await;
     }
-    // 尺寸先定：没摆过位时要按这档尺寸去算居中落点（收起档只有 62 高，
-    // 拿展开档去居中会把它顶到偏上的位置）
+    // 尺寸先定：没摆过位时要按这一档算居中落点（拿展开档去居中会把 62 高的栏顶偏）
     let expand = (
         row.width.map(|v| v as f64).unwrap_or(DEFAULT_SIZE.0),
         row.height.map(|v| v as f64).unwrap_or(DEFAULT_SIZE.1),
@@ -93,18 +93,16 @@ pub async fn open_sticky(app: &AppHandle, db: &Db, id: &str) -> AppResult<()> {
         transparent: true,
         always_on_top: row.pinned,
         skip_taskbar: true,
-        // 焦点交给 `float_reveal` 那一步（画完才亮，亮了才谈得上焦点）；
-        // 对一扇还没显示的窗调 set_focus 没有意义，留着只可能添乱
+        // 焦点交给 `float_reveal` 那一步（画完才亮，亮了才谈得上焦点）
         focused: false,
         visible: false,
-        // 前端报就绪后由 `float_reveal` 亮出来；2s 是给的余量（首启要起 webview、
-        // 解析 bundle、hydrate 一轮），到点没等到就强行 show
+        // 前端报就绪后由 `float_reveal` 亮出来；2s 是首启起 webview + hydrate 的余量，到点强行 show
         reveal_timeout_ms: Some(2000),
         show_on_reuse: true,
         init_script: Some(format!("window.__STICKY_ID__ = {:?};", id)),
     };
-    // 位置在 spec 里就给了（不在建完之后 set_position）：那一下会让窗先在系统
-    // 默认位置亮起来、再跳到记下的地方——真机看到的"闪一阵才到位"就是这两跳。
+    // 位置在 spec 里就给，不在建完之后 set_position：那一下会让窗先在系统默认位置亮起来再跳走——
+    // 真机看到的"闪一阵才到位"就是这两跳
     build_window(app, spec).await?;
     Ok(())
 }
@@ -129,9 +127,8 @@ async fn destroy_window(app: &AppHandle, label: &str) -> AppResult<()> {
     Ok(())
 }
 
-/// 叠窗要落在哪一张：搜索点的是组员、刚移进来的那一张、回收站恢复的那一张。
-/// 冷开走 init_script 的 `__STICKY_FOCUS_ID__`，窗已经在了走 `sticky:reveal` 事件——
-/// 一条信息两条路，缺了后者就是"点了第一张却看到别的张"。
+/// 叠窗要落在哪一张：冷开走 init_script 的 `__STICKY_FOCUS_ID__`，窗已经在了走
+/// `sticky:reveal` 事件——一条信息两条路，缺了后者就是"点了第一张却看到别的张"。
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct StickyReveal<'a> {
@@ -142,11 +139,8 @@ pub struct StickyReveal<'a> {
 /// 叠窗翻到指定那张的事件名（前端 contracts.ts 有同名常量镜像）
 pub const REVEAL_EVENT: &str = "sticky:reveal";
 
-/// "就是这一张"的事件名（提醒卡点开来用的，前端 contracts.ts 有镜像）。
-///
-/// 为什么要单独一条：那张便签**本来就开着**的时候，`show()` + `set_focus()` 在它身上
-/// 什么也没改变（它已经在前台），作者报的"点了去看这张便签没反应"就是这个。
-/// 于是除了摆位之外还要给它一个能看见的回应：纸边上闪一圈。
+/// 那张便签**本来就开着**的时候，`show()` + `set_focus()` 在它身上什么也没改变——
+/// 除了摆位还要给它一个能看见的回应：纸边上闪一圈。（提醒卡点开来用；前端 contracts.ts 有镜像）
 pub const PING_EVENT: &str = "sticky:ping";
 
 /// 让承载这张便签的那扇窗闪一下（单窗按 id 认，叠窗按"这一叠里有没有它"认）。
@@ -183,14 +177,9 @@ pub async fn open_group_stack(
         }
         return Ok(());
     }
-    // 首次落点：groups 行记过就用（旧库导入带进来的摆位），没记过就在光标那块屏的工作区
-    // 居中起步、按已开浮窗数错开。
-    // 用户此后拖动/缩放的记忆落在 window_state（frames::is_tracked 认 stickygrp-*），
-    // 由下面的 apply_saved 原样放回——groups 行不再是几何的活住址，只当出生点。
-    //
-    // 但 apply_saved 是"建完之后"才搬：窗已经可见了，于是先在出生点闪一下再跳到位。
-    // 所以记住过就直接按那份**出生**（位置与尺寸都在建之前定），apply_saved 照旧
-    // 再纠一次物理值——两者一致时那一写是空操作。
+    // 几何记忆在 window_state（frames::is_tracked 认 stickygrp-*），groups 行只当出生点。
+    // apply_saved 是"建完之后"才搬，会先在出生点闪一下再跳到位；所以记住过就直接按那份
+    // **出生**在建之前定好，apply_saved 照旧再纠一次物理值——两者一致时那一写是空操作。
     let (saved_position, expand) = match frames::saved_placement(app, &label) {
         Some((position, size)) => (Some(position), size),
         None => (None, group_frame(db, gid)?),
@@ -200,9 +189,8 @@ pub async fn open_group_stack(
     let (size, min_size) = mode_geometry(collapsed, expand);
     // 居中要按最终这一档的尺寸算，所以它排在 mode_geometry 后面
     let position = saved_position.or_else(|| group_position(app, db, gid, size));
-    // 同一个布尔注入两份（几何 + 全局）不是重复：前端**首帧**就得知道自己该画哪一档。
-    // 只给几何不给旗子，首帧会在那 62 高里画一整张正文，等 group_list 回来才改形状——
-    // 而那一下正好发生在 reveal 之后，用户看见的就是"打开时抖了一下"。
+    // 布尔注入两份（几何 + 全局）不是重复：前端**首帧**就得知道画哪一档，只给几何不给旗子就会在
+    // 62 高里画整张正文、等 group_list 回来才改形状——看见的就是"打开时抖了一下"
     let identity = match focus {
         Some(sid) => format!(
             "window.__STICKY_GROUP_ID__ = {:?}; window.__STICKY_FOCUS_ID__ = {:?};",
@@ -228,8 +216,7 @@ pub async fn open_group_stack(
         init_script: Some(init_script),
     };
     let window = build_window(app, spec).await?;
-    // 建完不再 set_position：位置已经在出生时就定了（那一句正是"先闪再跳"的来源）。
-    // apply_saved 留着做物理像素的精确纠正——与出生值一致时它是一写空操作。
+    // 建完不再 set_position（那是"先闪再跳"的来源）；apply_saved 只做物理像素的精确纠正
     frames::apply_saved(&window);
     if collapsed {
         clamp_bar_height(&window);
@@ -237,12 +224,9 @@ pub async fn open_group_stack(
     Ok(())
 }
 
-/// 收起那一档的高度是**死的**，压过 `window_state` 里记着的那份。
-///
-/// 为什么要有这一手：叠窗是 resizable 的，有人会把那条 62 的栏往下拽高（收起态没有
-/// 任何东西告诉系统"这一档只能 62"），于是 window_state 记下 200 高的栏；下次开机
-/// 出生尺寸虽然按栏给，`apply_saved` 又把记着的 200 原样放回——症状是"收起了，
-/// 下面还空一大块白"。宽度不管：那条栏横着长没有坏处，位置也不动（那是刚放好的物理值）。
+/// 收起那一档的高度是**死的**，压过 `window_state` 里记着的那份：收起态没任何东西告诉
+/// 系统"这一档只能 62"，栏能被拽高并被记住，下次开机 apply_saved 把 200 原样放回——
+/// 症状是"收起了，下面还空一大块白"。宽度不管（横着长没有坏处），位置也不动。
 fn clamp_bar_height(window: &WebviewWindow) {
     let (Ok(size), Ok(scale)) = (window.inner_size(), window.scale_factor()) else {
         return; // 量不到就不纠：宁可是那条栏高一点，也别把窗摆到不知道哪儿去
@@ -273,9 +257,7 @@ fn group_position(app: &AppHandle, db: &Db, gid: &str, size: (f64, f64)) -> Opti
     spawn_position(app, size)
 }
 
-/// 没摆过位的便签/叠窗：落在光标所在那块屏的**工作区**正中（任务栏占的那一条不算地方），
-/// 再按已开浮窗数每张向右下错开 26 逻辑像素——一张压一张但都露着顶栏，一眼看得出是新开的。
-/// 问不到屏幕（屏表缓存还没刷出来）给 None，交回系统摆。
+/// 没摆过位的便签/叠窗：落在光标那块屏的**工作区**正中（任务栏占的那一条不算地方），按已开浮窗数每张右下错开 26 逻辑像素
 fn spawn_position(app: &AppHandle, size: (f64, f64)) -> Option<(f64, f64)> {
     let count = app
         .webview_windows()
@@ -290,16 +272,14 @@ fn gen_id() -> String {
     id::sticky()
 }
 
-/// 组 id：与便签 id **同一套生成法**，只是前缀换成 g（认前缀的地方不少，多一套
-/// 形状就多一处坑）。拖拽并组要就地立一叠时用它，绝不让前端传——传进来的 id
-/// 能撞车也能伪造。生成法本体在 `support/id.rs`（图片 id 也走那一套）。
+/// 组 id：与便签 id **同一套生成法**，只换前缀 g（认前缀的地方不少，多一套形状就多一处坑）。
+/// 拖拽并组要就地立一叠时用它，绝不让前端传——传进来的 id 能撞车也能伪造。
 pub fn gen_group_id() -> String {
     id::group()
 }
 
-/// 引导的**虚拟演示便签**：与默认那张同一条路，只是给它一个名字。
-/// 起名是为了演的时候一眼看得懂"这张是引导造的"；销毁不靠名字，靠库里记的那串 id ——
-/// 他自己写一张同名便签不该被引导吃掉。
+/// 引导的**虚拟演示便签**：与默认那张同一条路，只是给它一个名字演得懂"这张是引导造的"。
+/// 销毁不靠名字，靠库里记的那串 id——他自己写一张同名便签不该被引导吃掉。
 pub fn demo_input(id: &str, title: &str) -> StickyInput {
     StickyInput {
         title: title.to_string(),
@@ -341,8 +321,7 @@ fn default_input(id: &str) -> StickyInput {
 mod tests {
     use super::*;
 
-    /// 一叠一窗与一签一窗靠 label 前缀分流（on_window_event 的贴边清账也按前缀认）。
-    /// 前缀一旦互相包含，销毁与清账都会静默走错分支——这里钉住互不重叠。
+    /// 钉住两种窗 label 前缀互不重叠——前缀互相包含时销毁与贴边清账都会静默走错分支
     #[test]
     fn 两种窗label前缀互不重叠() {
         assert!(!GROUP_PREFIX.starts_with(FLOAT_PREFIX));
@@ -351,9 +330,7 @@ mod tests {
         assert!(!label_for("s1").starts_with(GROUP_PREFIX));
     }
 
-    /// 收起那一档必须**连原生下限一起摘**。挂着 220×200 去建 62 高的栏，
-    /// builder 在建窗当场就把高夹回 200 —— 作者报的"收起态退出重开，尺寸不一致"就是它。
-    /// 这条以前只在叠窗那份里对，单窗那份漏了（两个地方各写一遍就会有一个漏）。
+    /// 钉住收起档**连原生下限一起摘**：挂着 220×200 建 62 高的栏会被 builder 当场夹回 200（单窗与叠窗共用这条）
     #[test]
     fn 收起档给死高并且不挂下限() {
         let (size, min) = mode_geometry(true, (500.0, 300.0));

@@ -1,66 +1,110 @@
-// 口令门 — "删一张私密便签"必须先证明你知道口令。
-//
-// 口径（2026-10-12 作者拍的）：扔进回收站（软删）和回收站里彻底删 / 一键清空（硬删）
-// 都要过这道门；私密层**已经解锁就不再重复问**——口令是那层锁的钥匙，不是每个动作
-// 的一次性码。所以本模块只在锁着的时候介入。
-//
-// 为什么是"挂起这一次动作"而不是"弹个窗就算了"：那样他输完口令还得回到便签再点一次
-// 删除，而解锁那一刻他手上正握着口令，最该顺手把刚才那一下做完。
-//
-// 收口有两条路，缺一不可：
-//  · 状态变"已解锁" → 执行（正常成功路径）；
-//  · 口令窗被关掉 → 重新读一次权威状态，解锁了就执行，没解锁就**作废**。
-// 第二条是安全阀：不作废的话，他后来为别的事解锁会把这一下补上，等于凭空删掉一张便签。
+// 口令门 — "动手之前先证明你知道口令"，一张一张问：揭开一张不替另一张付；删除一律再问一次，
+// 且那一发只验身份（private_verify），不把要删的那张摊开。
+// 一次只挂一件：连点两张的删除以最后一次为准，前一次静默作废（宁可少删不多删）。
+// 补做的信号必须是 `unlock:verified`（Rust 在口令验过那一刻发）：删除那条路验完不改变状态，
+// "窗关了"分辨不出成功还是放弃。反过来"窗关了"即作废，否则日后为别的揭开会误补这一发。
+// reveal 那条路另认"这张已开着"为完成条件：状态在后端，不算绕过口令。
 
-import { isPrivateUnlocked, subscribe, syncPrivateState } from "@/data/private-state";
+import { isRevealed, subscribe, syncPrivateState } from "@/data/private-state";
 import { openUnlockWindow } from "@/platform/commands";
-import { UNLOCK_DISMISSED } from "@/platform/contracts";
+import { UNLOCK_DISMISSED, UNLOCK_VERIFIED } from "@/platform/contracts";
+import type { UnlockIntent } from "@/platform/contracts";
 import { listen } from "@/platform/bridge";
 import { logger } from "@/platform/logger";
 
 const SCOPE = "private-gate";
 
 type Action = () => Promise<void>;
+export type GatePurpose = "reveal" | "delete";
 
-/** 一次只挂一件：连点两张的删除以最后一次为准，前一次静默作废（宁可少删不多删） */
-let pending: Action | null = null;
+interface Pending {
+  noteId: string;
+  purpose: GatePurpose;
+  action: Action;
+  /** 只在**真的走过口令窗**这条路才做的事（比如标记私密完之后问他要不要立即锁回去） */
+  after: Action | null;
+  /** 给日志用：挂起的那一下作废时要说得清是哪一下 */
+  what: string;
+}
+
+let pending: Pending | null = null;
 let armed = false;
 
-async function settle(): Promise<void> {
-  const act = pending;
-  if (act === null || !isPrivateUnlocked()) return;
+function matches(held: Pending, intent: UnlockIntent): boolean {
+  return held.noteId === intent.noteId && held.purpose === intent.purpose;
+}
+
+/** 口令验过（或这一张已经开着了）→ 把挂起的那一下做完 */
+async function complete(held: Pending, why: string): Promise<void> {
+  if (pending !== held) return;
   pending = null;
+  // 他说"输完口令没反应"时，这一行是"补做到底跑没跑"的唯一凭据
+  logger.info(SCOPE, `${why}后补做：${held.what}`);
   try {
-    await act();
+    await held.action();
+    await held.after?.();
   } catch (error) {
-    logger.caught(SCOPE, "解锁后补做删除失败", error);
+    logger.caught(SCOPE, `补做失败：${held.what}`, error);
   }
+}
+
+async function onVerified(intent: UnlockIntent): Promise<void> {
+  const held = pending;
+  if (held === null || !matches(held, intent)) return;
+  await complete(held, "口令验过");
+}
+
+async function onStateChange(): Promise<void> {
+  const held = pending;
+  if (held === null || held.purpose !== "reveal") return;
+  if (isRevealed(held.noteId)) await complete(held, "这张已揭开");
 }
 
 /** 只装一次：监听器活到进程结束，靠 pending 是否为空决定要不要动手 */
 async function arm(): Promise<void> {
   if (armed) return;
   armed = true;
-  subscribe(() => void settle());
+  await listen<UnlockIntent>(UNLOCK_VERIFIED, (intent) => {
+    void onVerified(intent).catch((error: unknown) =>
+      logger.caught(SCOPE, "口令门收尾失败", error),
+    );
+  });
+  subscribe(() => {
+    void onStateChange();
+  });
   await listen(UNLOCK_DISMISSED, () => {
     void (async () => {
-      // 谁关的窗不算数（解锁成功也是窗自己关的），读一次权威状态再决定
+      // 先重读一次状态再判作废：万一他是从别的窗把这张揭开的，这一下该补做
       await syncPrivateState();
-      await settle();
-      pending = null;
+      await onStateChange();
+      if (pending !== null) {
+        logger.warn(SCOPE, `口令窗关了而口令没过，这一发作废：${pending.what}`);
+        pending = null;
+      }
     })().catch((error: unknown) => logger.caught(SCOPE, "口令窗收尾失败", error));
   });
 }
 
-/** 已解锁就当场办；锁着就把这一次挂上，去弹口令窗 */
-export async function requirePrivateUnlock(action: Action): Promise<void> {
-  if (isPrivateUnlocked()) {
+/**
+ * 该问就问，问完把这一件挂上再去开口令窗。
+ * reveal 而这一张已开着 → 当场办完（不该被打断）；delete → 一律问。
+ */
+export async function requirePrivateUnlock(request: {
+  noteId: string;
+  purpose: GatePurpose;
+  action: Action;
+  after?: Action;
+  what?: string;
+}): Promise<void> {
+  const { noteId, purpose, action, after, what = "那一下" } = request;
+  if (purpose === "reveal" && isRevealed(noteId)) {
     await action();
     return;
   }
-  pending = action;
+  pending = { noteId, purpose, action, after: after ?? null, what };
+  logger.warn(SCOPE, `要口令，挂起并开口令窗（${purpose}）：${what}`);
   await arm();
-  await openUnlockWindow();
+  await openUnlockWindow(noteId, purpose);
 }
 
 /** 测试复位用：作废挂起的动作并允许重新装监听 */

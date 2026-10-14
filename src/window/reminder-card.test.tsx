@@ -13,10 +13,11 @@ import type { ReminderCardPayload } from "@/platform/contracts";
 
 const open = vi.fn();
 const dismiss = vi.fn();
+const snooze = vi.fn();
 let emit: ((payload: unknown) => void) | null = null;
 
 vi.mock("@/platform/commands", () => ({
-  // 组件对这两条都接了 `.catch(...)`，所以替身必须回一个 Promise（回 undefined
+  // 组件对这几条都接了 `.catch(...)`，所以替身必须回一个 Promise（回 undefined
   // 就是"点一下就炸"，而那正是这条用例要排掉的东西）
   reminderOpen: (id: string) => {
     open(id);
@@ -24,6 +25,10 @@ vi.mock("@/platform/commands", () => ({
   },
   reminderDismiss: () => {
     dismiss();
+    return Promise.resolve();
+  },
+  reminderSnooze: (id: string) => {
+    snooze(id);
     return Promise.resolve();
   },
 }));
@@ -59,17 +64,19 @@ const second: ReminderCardPayload = {
 beforeEach(() => {
   open.mockClear();
   dismiss.mockClear();
+  snooze.mockClear();
   emit = null;
 });
 
 describe("提醒卡", () => {
-  it("标题、那句说明、两颗钮都画出来，且不碰主数据", () => {
+  it("标题、那句说明、三颗钮都画出来，且不碰主数据", () => {
     render(<ReminderCard initial={first} />);
     // 这套用例没有 jest-dom（工程里没装），getBy* 找不到就直接抛，取到就是画出来了
     expect(screen.getByText("买菜").textContent).toBe("买菜");
     expect(screen.getByText(/勾掉或改时间就不再提醒/).textContent).toContain("到点了");
     expect(screen.getByRole("button", { name: "去看这张便签" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "关掉这条提醒" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "十分钟后再响" })).toBeTruthy();
     cleanup();
   });
 
@@ -85,6 +92,16 @@ describe("提醒卡", () => {
     fireEvent.click(screen.getByRole("button", { name: "关掉这条提醒" }));
     expect(dismiss).toHaveBeenCalledTimes(1);
     expect(open).not.toHaveBeenCalled();
+    cleanup();
+  });
+
+  /** 「稍后再响」带的是这张卡的 id，并且不顺手把卡收掉——收卡在 Rust 那一发里一起做 */
+  it("点「稍后再响」带这张卡的 id，不去开便签", () => {
+    render(<ReminderCard initial={first} />);
+    fireEvent.click(screen.getByRole("button", { name: "十分钟后再响" }));
+    expect(snooze).toHaveBeenCalledWith("s1");
+    expect(open).not.toHaveBeenCalled();
+    expect(dismiss).not.toHaveBeenCalled();
     cleanup();
   });
 

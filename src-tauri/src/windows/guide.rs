@@ -1,19 +1,9 @@
 // guide — 引导气泡（单例，常置顶，一次性）。十二步分步教程，前端在 `features/guide/`。
-//
-// 形状是一扇 320×168 的**无边框透明小窗**，与提醒卡同一类东西（`windows/card.rs`）：
-// `factory` 对所有窗都下了 `decorations(false)`，透明窗再统一关掉系统阴影——透明窗把
-// 窗矩形以外全裁掉，外阴影等于没画，所以卡片四周留了内边距、边靠描边。
-//
-// 三条口径：
-//  · **不遮罩**：Tauri 的点击穿透是整窗开关（`set_ignore_cursor_events` 没有区域粒度），
-//    盖一层暗就点不动底下那张真便签——引导期间要能跟着做，所以宁可不遮。
-//  · **隐藏建 + 等前端喊 reveal**：这一扇是透明窗，出生就可见会先亮一块 WebView2 默认白；
-//    2000ms 到点无条件 show，"看不见比闪一下白严重"那条纪律在这儿一样成立。
-//  · **出生位置在这里定**（工作区正中）：第一步就讲"按住右键出盘"，盘出现在屏幕中间，
-//    气泡落在那儿最贴。摆位交给前端就是"先闪在系统给的位置再跳走"——那条老症状。
-//    之后每搬一次都是他点了「下一步」，跳是预期内的。
-//
-// 关 = 销毁（下次开都从第一步起）。销账 `guide.seen` 在 `commands/window.rs` 那条命令里做。
+// 320×168 无边框透明小窗，与提醒卡同一类（factory 对透明窗统一关掉系统阴影）。
+// 不遮罩：点击穿透是整窗开关（`set_ignore_cursor_events` 没有区域粒度），盖暗就点不动底下那张真便签。
+// 隐藏建 + 等前端喊 reveal：透明窗出生就可见会先亮一块 WebView2 默认白；2000ms 到点无条件 show。
+// 出生位置在这里定（工作区正中）：第一步讲"按住右键出盘"，气泡落在屏幕中间最贴；交给前端就是"先闪再跳"。
+// 关 = 销毁（下次从第一步起）；`guide.seen` 的销账在 `commands/window.rs` 那条命令里做。
 
 use tauri::{AppHandle, Manager};
 
@@ -25,14 +15,13 @@ use crate::windows::monitor;
 pub const GUIDE_LABEL: &str = "guide";
 /// 看过引导没有。缺键（或值不是 "1"）= 没看过 → 下次启动自动再演一次
 pub const GUIDE_SEEN_KEY: &str = "guide.seen";
-/// 引导自己建的那张**虚拟演示便签**的 id。讲到便签的那六步（换类 / 长高 / 贴边 / 并叠 /
-/// 提醒 / 私密）在桌面上一张都没有时靠它指着，走完（或跳过）由 `close_guide_window` 销毁。
-/// 记在库里而不是只在窗里：应用被直接关掉时那条 close 没跑到，下次开引导照这个 id 先清。
+/// 引导自己建的那张**虚拟演示便签**的 id；讲到便签的那六步在桌面一张都没有时靠它指着，
+/// 走完（或跳过）销毁。记在库里而不是只在窗里：应用被直接关掉时那条 close 没跑到，下次开先按它清。
 pub const GUIDE_DEMO_NOTE_KEY: &str = "guide.demo_note";
 const GUIDE_ENTRY: &str = "guide.html";
 /// 与前端 `features/guide/window.tsx` 的 BUBBLE 同值（**逻辑**像素），改一边要改另一边。
-/// 这是**出生高，也是下限**：三行文案在 168 里装不下，前端量完实测高会调 `setWindowFrame`
-/// 把这扇窗往下长——透明窗把窗矩形以外全裁走，不涨就会被裁掉最后一行和「知道了」那颗钮。
+/// 这是**出生高，也是下限**：三行文案装不下时前端量完实测高会调 `setWindowFrame` 往下长——
+/// 透明窗把窗矩形以外全裁走，不涨就被裁掉最后一行和「知道了」那颗钮。
 const BUBBLE_SIZE: (f64, f64) = (320.0, 168.0);
 /// 等 reveal 的兜底时长，与便签窗、提醒卡同值
 const REVEAL_TIMEOUT_MS: u64 = 2000;
@@ -76,14 +65,11 @@ pub async fn open(app: &AppHandle) -> AppResult<()> {
         init_script: None,
     };
     let window = build_window(app, spec).await?;
-    // **必须不可拉伸**：无框但 `resizable=true` 时 tao 仍留着 WS_THICKFRAME，那是一圈
-    // 看不见的伸缩边框——我们摆的是外框左上角，看得见的那张卡片却被推进去好几个像素，
-    // 缩放越高越多。症状就是"气泡位置不对"。星环那条老账（`ring.rs::build_hidden`），
-    // 气泡的尺寸由 BUBBLE_SIZE 定死，本来也不给用户拉。
+    // **必须不可拉伸**：无框但 `resizable=true` 时 tao 仍留着 WS_THICKFRAME——一圈看不见的
+    // 伸缩边框，摆的是外框左上角而看得见的卡片被推进去好几个像素（症状："气泡位置不对"）
     let _ = window.set_resizable(false);
     if let (Ok(scale), Some(area)) = (window.scale_factor(), monitor::at((0, 0))) {
-        // 摆位结果要落日志：真机上"位置不对"这件事，没有这份数就只能猜是缩放、工作区
-        // 还是那圈边框（`set_resizable` 的成败同理——之前都是 `let _ =` 吞掉的）
+        // 摆位结果要落日志：真机"位置不对"没有这份数就只能猜是缩放、工作区还是那圈边框
         log::info(
             "guide",
             &format!(
@@ -97,8 +83,7 @@ pub async fn open(app: &AppHandle) -> AppResult<()> {
 
 /// 关掉这扇窗。销账由调用方（那条命令）负责，这里只管窗。
 pub async fn close(app: &AppHandle) -> AppResult<()> {
-    // 闸门无论如何要放下：气泡停在讲环那两步被关掉时，前端那条 release 不一定赶得上，
-    // 而闸门一直立着 = 真环从此点盘外收不掉——那是比"引导没关干净"严重得多的副作用
+    // 闸门无论如何要放下：release 不一定赶得上，而闸门一直立着 = 真环从此点盘外收不掉
     crate::input::set_guide_holds_ring(false);
     app.get_webview_window(GUIDE_LABEL)
         .ok_or_else(|| AppError::new("WINDOW_MISSING", "引导窗没有打开"))?
@@ -112,15 +97,11 @@ const RING_GAP_LOGICAL: f64 = 14.0;
 const RING_SIDE_LOGICAL: f64 = 360.0;
 
 /// 讲星环那几步（第二、三步）：报回**屏幕上那只环的真实中心**（逻辑像素），气泡据此摆过去。
-///
-/// 为什么不自己开环：作者报的两条都出在这儿。① "第二步闪星环盘"——气泡在盘外，
-/// 点它推进 = 盘外左键 = 钩子按平时的规矩把环收了；② "第三步不在星环上"——那一步讲的是
-/// 环上那一格，环是我们叫出来的还是他真按出来的，位置根本两回事。
-/// 所以顺序反过来了：**第一步等他真按住右键**（前端听 `ring:open` 自动推进），
-/// 到第二、三步时环就是他刚开出来的那一只，我们只读它的矩形。
-///
-/// 读不到环（他从第三步用「上一步」倒着走、或环已经被收掉）才兜底自己开一只。
-/// 期间把 `GUIDE_HOLDS_RING` 立起来：盘外左键不收环，盘内那一下照常收。
+/// 为什么不自己开环：气泡在盘外，点它推进 = 盘外左键 = 钩子按平时的规矩把环收了；而环是我们
+/// 叫出来的还是他真按出来的，位置根本两回事。所以**第一步等他真按住右键**（前端听 `ring:open`
+/// 自动推进），到这两步只读他刚开出来的那只环的矩形。
+/// 读不到环（用「上一步」倒着走、或环已被收掉）才兜底自己开一只，期间立 `GUIDE_HOLDS_RING`：
+/// 盘外左键不收环，盘内那一下照常收。
 pub async fn show_ring(app: &AppHandle) -> AppResult<RingSpot> {
     crate::input::set_guide_holds_ring(true);
     if let Some(spot) = ring_spot(app) {
@@ -143,8 +124,7 @@ pub async fn show_ring(app: &AppHandle) -> AppResult<RingSpot> {
     let cy = area.y + (area.height - ring_phys as i64) / 2;
     crate::windows::ring::open_at(app, cx as i32, cy as i32).await?;
     if let Some(window) = app.get_webview_window(GUIDE_LABEL) {
-        // `ring::reveal` 会 set_focus（那是给"用户主动唤环"定的：环要吃键盘）。
-        // 引导里主角是气泡，焦点不夺回来，气泡上的键盘就走不通
+        // `ring::reveal` 会 set_focus；引导里主角是气泡，焦点不夺回来气泡上的键盘就走不通
         let _ = window.set_focus();
     }
     log::info(

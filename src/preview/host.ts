@@ -1,13 +1,8 @@
-// 预览台宿主（父页）— 持假数据核，按 label 管一叠 iframe，把命令的窗口副作用落成真实框。
-//
-// 拦在桥这一层（platform/bridge 的 DevBridge）而不是拦 Backend：这样 store、
-// 去抖落库、跨窗合流、私密层包装、四扇窗的组件全走真路径，预览台只替代"操作系统"。
-// 换句话说——这里验的是前端行为，不是 Rust 行为；Rust 侧的语义改动要靠 fake-db.ts
-// 逐条跟抄，抄漏了预览台就在骗人。
-//
-// 未覆盖的：真拖动（data-tauri-drag-region 是原生的，iframe 里点不动）、贴边细丝、
-// 多显示器/DPI、WH_MOUSE_LL。摆位用右侧面板的数值框注入 moved/resized，
-// 够把"几何合流 + 最小尺寸纠偏"这条链路跑通。
+// 预览台宿主（父页）— 持假数据核，按 label 管 iframe，把命令的窗口副作用落成真实框。
+// 拦在桥这一层（DevBridge）而不是拦 Backend：store、去抖落库、跨窗合流、私密层包装、窗组件全走真路径；
+// 这里验的是前端行为不是 Rust 行为——Rust 语义要逐条跟抄进 fake-db.ts，抄漏了预览台就在骗人。
+// 未覆盖（在这儿验不出来）：真拖动（原生 drag-region 在 iframe 里点不动）、贴边细丝、多显示器/DPI、WH_MOUSE_LL；
+// 摆位用右侧面板数值框注入 moved/resized，够把"几何合流 + 最小尺寸纠偏"这条链路跑通。
 
 import type { FloatFrame, StickyNote } from "@/platform/contracts";
 import {
@@ -33,10 +28,8 @@ import {
 } from "@/preview/window-specs";
 
 /**
- * 预览台的"工作区"= 放窗的那块画布（宿主顶栏下面那块），不是整个视口：
- * 按视口算会把窗算到画布底下看不见的一截里去。真机对应的是"光标所在屏减任务栏"，
- * 预览台没有任务栏，缩放也没有，所以逻辑像素与画布像素同一数值。
- * 画布还没挂上（首帧之前）就退回视口尺寸。
+ * 预览台的"工作区" = 放窗的画布（不是整个视口，按视口会把窗算到画布外看不见的一截）。
+ * 没有任务栏也没有缩放，逻辑像素即画布像素；画布未挂上（首帧前）退回视口尺寸。
  */
 function hostWorkArea(): Rect {
   const box = document
@@ -67,9 +60,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 const NO_MIN = { width: 0, height: 0 };
 
 /**
- * 出生尺寸过一遍原生下限——builder 的 `min_inner_size` 就是当场夹的。
- * 预览台以前不夹这一刀，于是"挂着 220×200 去建 62 高的栏"这种错在这儿演不出来，
- * 只能等真机报（`float::mode_geometry` 那条就是那次报出来的）。
+ * 出生尺寸过一遍原生下限（builder 的 `min_inner_size` 就是当场夹的）。不夹这一刀，
+ * "挂着 220×200 去建 62 高的栏"这种错在这儿演不出来，只能等真机报。
  */
 function birthRect(rect: Rect, min: { width: number; height: number }): Rect {
   return {
@@ -99,8 +91,7 @@ function frameSrc(
   if (spec.entityId !== null && spec.label.startsWith(GROUP_PREFIX)) {
     search.set("groupId", spec.entityId);
     if (focus !== null) search.set("focus", focus);
-    // 与 Rust 的 initialization_script 同一条注入（float.rs 把 collapsed 写成全局）：
-    // 单窗不需要它——那边的 collapsed 住在便签行里，挂载时已经在 store 里了
+    // 与 Rust initialization_script 同一条注入；单窗不需要——它的 collapsed 住在便签行里，挂载时已进 store
     if (collapsed) search.set("collapsed", "1");
   }
   return `/${spec.entry}?${search.toString()}`;
@@ -135,9 +126,8 @@ export class PreviewHost {
   }
 
   /**
-   * 与 commands/window.rs::float_frames 同口径：只给**可见**的浮窗与叠窗，
-   * 面板窗和隐藏的那几扇不在表里（拖到它们身上没有意义）。
-   * 预览台是 1:1 的画布坐标，所以逻辑像素就是 Rust 那份"物理像素"的等价物。
+   * 与 commands/window.rs::float_frames 同口径：只给**可见**的浮窗与叠窗。
+   * 预览台是 1:1 画布坐标，逻辑像素就是 Rust 那份"物理像素"的等价物。
    */
   floatFrames(): FloatFrame[] {
     const out: FloatFrame[] = [];
@@ -193,8 +183,7 @@ export class PreviewHost {
     const floats = [...this.frames.keys()].filter((l) =>
       l.startsWith(FLOAT_PREFIX),
     ).length;
-    // 收起那一档**连原生下限一起摘**（与 `float::mode_geometry` 同一条）：留着 220×200，
-    // 那条 62 的栏会被当场夹回 200 —— 作者报的"收起态退出重开，尺寸不一致"就是它。
+    // 收起那一档**连原生下限一起摘**（同 `float::mode_geometry`），否则 62 的栏被夹回 200
     const min = row.collapsed ? NO_MIN : spec.min;
     // 尺寸先定，落点再按这一档尺寸居中（与 `float.rs::open_sticky` 同一个先后）
     const size = row.collapsed
@@ -245,8 +234,7 @@ export class PreviewHost {
     const floats = [...this.frames.keys()].filter((l) =>
       l.startsWith(FLOAT_PREFIX),
     ).length;
-    // 与 float.rs::open_group_stack 同口径：收起态出生就是那条 62 高的栏、宽夹到 360，
-    // 而且**连原生下限一起摘**（见 openSticky 那条注释）
+    // 同 float.rs::open_group_stack：收起态出生就是 62 高的栏、宽夹到 360，且连下限一起摘
     const min = group.collapsed ? NO_MIN : spec.min;
     // 先后同单窗：尺寸先定，落点按这一档尺寸居中
     const size = group.collapsed
@@ -280,14 +268,11 @@ export class PreviewHost {
       this.focus(label);
       return;
     }
-    // 窗型从 window-specs 的那一份表面板里查，不在这里再抄一张表：
-    // 上一版这里自己列了五颗 label，加第六扇窗时只改了 specs 与 fake-db，
-    // 于是命令回了成功、框却静悄悄不建——两份名单早晚对不上，就是这么个错法
+    // 窗型从 window-specs 查，不在这里再抄一张表——上一版两份名单漂移，命令回成功、框静悄悄不建
     const kind = PANEL_LABELS.find((panel) => panel.label === label)?.kind;
     if (kind === undefined) return;
     const spec = specOf(kind);
-    // 口令窗真机每次都落在光标那块屏的工作区正中（unlock.rs 走 monitor::spawn_centered）；
-    // 其余面板真机是把位置交回系统摆，这里用一个固定左上角代表"系统摆的"
+    // unlock 真机每次落光标屏正中（monitor::spawn_centered）；其余面板位置交系统，这里固定左上角代表
     const at =
       kind === "unlock" ? centerBlock(hostWorkArea(), spec.size) : { x: 60, y: 60 };
     this.add({
@@ -314,10 +299,8 @@ export class PreviewHost {
   }
 
   /**
-   * 窗内命令要关的一扇：按 Rust 的语义分两档。
-   * search·trash·settings·ring 是 hide（保住 WebView 实例，下次秒开——
-   * 销毁重建的代价正好落在"按下快捷键到看见"这段时间上）；
-   * unlock 与便签/叠窗是 destroy。
+   * 按 Rust 语义分两档关：search·trash·settings·ring 是 hide（保住 WebView 实例，下次秒开——
+   * 销毁重建的代价正落在"按下快捷键到看见"那段）；unlock 与便签/叠窗是 destroy。
    */
   closeByLabel(label: string): void {
     const handle = this.frames.get(label);
@@ -358,26 +341,19 @@ export class PreviewHost {
   }
 
   /**
-   * 宿主自己发命令也走同一条路（writer = "preview"）。
-   * 注意：父页没有装替身桥，所以它**不能**直接用 app 的 data 层
-   * （changeScheme/commands.ts 那些会去 invoke 真 Tauri 而失败）——必须经这里。
+   * 宿主自己发命令也走同一条路（writer="preview"）。父页没装替身桥，**不能**直接用 app 的
+   * data 层（那些会去 invoke 真 Tauri 而失败）——必须经这里。
    */
   run(cmd: string, args: PreviewArgs = {}): Dispatch {
     return this.dispatch(cmd, args, "preview");
   }
 
   /**
-   * 模拟托盘「立即锁定」。形状照 tray.rs:65-78 抄：先私有 lock，再由**托盘**发
-   * `store:private-changed`（private_lock 命令本身不广播——前端那个 privateLock() 封装目前无人调用）。
+   * 模拟托盘「立即锁定」：真机走 `private::lock` + 托盘自己发 `store:private-changed`（tray.rs）；
+   * 这里借 `private_lock` 命令走同一步（它现在也发同一条广播，不必手动补发）。
    */
   trayLock(): void {
     this.run("private_lock");
-    for (const handle of this.frames.values()) {
-      handle.element?.contentWindow?.postMessage(
-        { t: "event", event: "store:private-changed", payload: "tray" },
-        this.origin,
-      );
-    }
   }
 
   private dispatch(cmd: string, args: PreviewArgs, writer: string): Dispatch {
@@ -441,9 +417,8 @@ export class PreviewHost {
     actions: WindowAction[];
     broadcasts: Broadcast[];
   }): void {
-    // 任何一条"把一扇窗拉到眼前"的动作都算真机里 `float_reveal` 那一声：开场复刻在这儿收场。
-    // （真机那一侧的对应口径在 `windows/factory.rs`：面板窗出生就可见，不走 float_reveal，
-    // 所以那边是在建窗处按 `spec.visible` 叫的收场）
+    // 任何"把一扇窗拉到眼前"都算真机的 `float_reveal` 那一声——开场复刻在这儿收场
+    //（真机侧面板窗出生就可见、不走 float_reveal，收场在建窗处按 `spec.visible` 叫，见 factory.rs）
     if (
       drain.actions.some(
         (action) =>
@@ -478,8 +453,7 @@ export class PreviewHost {
           break;
       }
     }
-    // 跨窗广播：与 Rust 的 emit 同形，发给所有窗（含写者自己——store 按 writer label 跳过，
-    // 而私密层那条是按事件重读状态，不看 writer）
+    // 跨窗广播与 Rust emit 同形，发给所有窗（store 按 writer label 跳过；私密层按事件重读状态、不看 writer）
     for (const broadcast of drain.broadcasts) {
       for (const handle of this.frames.values()) {
         handle.element?.contentWindow?.postMessage(

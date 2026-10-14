@@ -1,9 +1,20 @@
-// 预览台的窗型规格 — 与 Rust 侧 windows/*.rs 的常量一一对应，改一边要同步另一边：
-//   float.rs   DEFAULT_SIZE 320×300 / MIN_SIZE 220×200 / BAR_HEIGHT 62 / BAR_MAX_WIDTH 360
+// 预览台的窗型规格 — 与 Rust 侧 windows/*.rs 的常量一一对应（对照测试在
+// `src/data/mirrored-constants.test.ts`，改一边忘了另一边会当场红）：
+//   float.rs   DEFAULT_SIZE / MIN_SIZE / BAR_HEIGHT / BAR_MAX_WIDTH（便签与叠窗这四个走
+//              `data/window-geometry.ts` 那一份，这里不再抄数）
 //   search.rs  480×420（min 380×340）· trash.rs 440×560（min 360×420）
 //   settings.rs 560×480（min 480×420）· unlock.rs 420×470 · guide.rs 320×168（无边框气泡）
 //   ring.rs    RING_SIZE 360×360（正方形，ring.rs 里有一条自 assert 钉着）
 // url 与 vite.config.ts 的 rollupOptions.input 同表（跨语言契约那条纪律在这里同样成立）。
+
+import {
+  BAR_HEIGHT,
+  BAR_MAX_WIDTH,
+  STICKY_DEFAULT_SIZE,
+  STICKY_MIN_SIZE,
+} from "@/data/window-geometry";
+
+export { BAR_HEIGHT, BAR_MAX_WIDTH };
 
 export type FrameKind =
   "sticky" | "stack" | "search" | "trash" | "settings" | "unlock" | "ring" | "guide";
@@ -41,9 +52,6 @@ export const HIDE_ON_CLOSE: readonly FrameKind[] = [
   "ring",
 ];
 
-export const BAR_HEIGHT = 62;
-export const BAR_MAX_WIDTH = 360;
-
 const SIZE: Record<
   FrameKind,
   {
@@ -54,14 +62,14 @@ const SIZE: Record<
   }
 > = {
   sticky: {
-    size: { width: 320, height: 300 },
-    min: { width: 220, height: 200 },
+    size: STICKY_DEFAULT_SIZE,
+    min: STICKY_MIN_SIZE,
     entry: "index.html",
     title: "一闲便签",
   },
   stack: {
-    size: { width: 320, height: 300 },
-    min: { width: 220, height: 200 },
+    size: STICKY_DEFAULT_SIZE,
+    min: STICKY_MIN_SIZE,
     entry: "index.html",
     title: "一叠便签",
   },

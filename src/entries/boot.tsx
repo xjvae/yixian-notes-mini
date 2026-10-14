@@ -7,16 +7,20 @@
 import { type ReactNode, StrictMode, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { ErrorBoundary } from "@/ui/error-boundary";
-import { initPrivateState, onPrivateLayerChange } from "@/data/private-state";
+import {
+  hasRevealed,
+  initPrivateState,
+  onPrivateLayerChange,
+} from "@/data/private-state";
 import { initGroupPresentation } from "@/data/group-presentation";
 import { initAutoSizeDefault } from "@/data/auto-size-default";
+import { initLockAfterMark } from "@/data/lock-after-mark";
 import { initScheme } from "@/data/scheme";
 import { describeError } from "@/platform/errors";
 import { floatReveal } from "@/platform/commands";
 import { logger } from "@/platform/logger";
 import { createTauriBackend } from "@/store/backend";
-import { refreshStore, hydrateStore, initStore } from "@/store/notes-store";
-import { withPrivateLayer } from "@/store/private-backend";
+import { flushNow, refreshStore, hydrateStore, initStore } from "@/store/notes-store";
 import "@/index.css";
 
 /**
@@ -93,23 +97,42 @@ export async function boot({
 
   if (!hydrate) {
     void (async () => {
-      // 主题在挂载前应用：晚了就先闪一帧浅色
-      await initScheme();
-      await initGroupPresentation();
-      await initAutoSizeDefault();
+      // 主题在挂载前应用：晚了就先闪一帧浅色。四条互不依赖，串起来就是把首帧推后四趟往返
+      await Promise.all([
+        initScheme(),
+        initGroupPresentation(),
+        initAutoSizeDefault(),
+        initLockAfterMark(),
+      ]);
       mount();
     })();
     return;
   }
   try {
-    // 私密层包装在 Backend 上：读写拆合对 store 与视图透明
-    initStore(withPrivateLayer(createTauriBackend()));
-    await initScheme();
-    await initGroupPresentation();
-    await initAutoSizeDefault();
-    await initPrivateState();
-    // 解锁/锁定/改密后重拉：包装层按新的私密状态重新合并或隐去内容
-    onPrivateLayerChange(() => void refreshStore());
+    // 私密层的读合并/写拆分全在 Rust（`db/query/private_note.rs`）：store 拿到的
+    // 就已经是合并好的行，锁着时是空占位。这一层不需要任何包装
+    initStore(createTauriBackend());
+    // 设置项四条 + 私密状态 + 首屏数据**并行**发。原来是一串 await 下来才轮到最贵的那发
+    // `get_bootstrap`（全库列表含正文），于是首帧时间约等于"六趟往返之和"。
+    // 次序铁律仍在 `hydrateStore` 自己身上（先订阅后读），这里并行不打断它
+    await Promise.all([
+      initScheme(),
+      initGroupPresentation(),
+      initAutoSizeDefault(),
+      initLockAfterMark(),
+      initPrivateState(),
+    ]);
+    // 揭开/收回/改密后重拉：Rust 按新的私密状态合并或隐去内容
+    onPrivateLayerChange(
+      () =>
+        void (async () => {
+          // 有张刚被揭开，先补做"这张没开着时写不下去"的那几条（守卫在 `sticky::upsert`：
+          // 没揭开的当一拍打的字会被退回在途队列，不补就要等下一次编辑才落）。
+          // 逐张模型里 flushNow 会照旧把还开着的张送去落库，解不开的留在队列里
+          if (hasRevealed()) await flushNow();
+          await refreshStore();
+        })(),
+    );
     await hydrateStore();
     mount();
   } catch (error) {

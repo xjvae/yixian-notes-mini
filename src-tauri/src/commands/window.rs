@@ -66,21 +66,18 @@ pub async fn open_guide_window(app: AppHandle) -> AppResult<()> {
     guide::open(&app).await
 }
 
-/// 讲星环那几步：报回屏幕上那只环的真实中心（逻辑像素），气泡据此摆过去。
 #[tauri::command]
 pub async fn guide_show_ring(app: AppHandle) -> AppResult<guide::RingSpot> {
     guide::show_ring(&app).await
 }
 
-/// 离开讲环的那几步：闸门放下、环还开着就收掉。
 #[tauri::command]
 pub async fn guide_release_ring(app: AppHandle) {
     guide::release_ring(&app).await;
 }
 
 /// 托盘里我们那一格的矩形（**物理**像素），问不到回 null（气泡退右下角那一档摆法）。
-/// UIA 那一路要跨进程问 Explorer，几十到几百毫秒，所以放去阻塞线程池里跑，
-/// 别占着异步运行时的 worker。
+/// UIA 要跨进程问 Explorer，几十到几百毫秒，所以放去阻塞线程池跑，别占着异步运行时的 worker。
 #[tauri::command]
 pub async fn tray_rect() -> Option<crate::tray::TrayRect> {
     tauri::async_runtime::spawn_blocking(|| crate::tray::icon_rect())
@@ -90,14 +87,17 @@ pub async fn tray_rect() -> Option<crate::tray::TrayRect> {
 
 /// 虚拟演示便签：**凑够** `want` 张给讲便签的那几步指着（已有的不动，缺几张补几张）。
 /// 为什么由引导放纸而不是让他按新建：并叠那一步要说"把那张拖到这一张上"，桌上得真有两张。
-/// 上一版写的是"你自己按 1"，他照做就变成"又新建了一张便签"——那是在重复第三步，不是在并叠。
-/// 走完引导直接销毁、不进回收站（作者拍的）—— 那是引导造的纸，不是他写的东西。
-/// 返回最后那张的窗 label，气泡照 label 摆位（不用猜"哪张是新出现的"）。
+/// 走完引导直接销毁、不进回收站（那是引导造的纸，不是他写的东西）；返回最后那张的窗 label。
 #[tauri::command]
 pub async fn guide_demo_note(app: AppHandle, want: u8) -> AppResult<String> {
     let db = app
         .try_state::<Db>()
         .ok_or_else(|| AppError::new("DB_MISSING", "主库不可用，建不出演示便签"))?
+        .inner()
+        .clone();
+    let vault = app
+        .try_state::<crate::data::private::PrivateVault>()
+        .ok_or_else(|| AppError::new("VAULT_MISSING", "私密层状态没就位"))?
         .inner()
         .clone();
     let want = want.clamp(1, 4) as usize;
@@ -111,7 +111,12 @@ pub async fn guide_demo_note(app: AppHandle, want: u8) -> AppResult<String> {
             format!("引导演示 {}", ids.len() + 1)
         };
         let input = float::demo_input(&id, &title);
-        run_db(db.clone(), move |db| crate::db::query::sticky::upsert(db, input)).await?;
+        // 克隆一份进闭包（闭包是 `move`，而这一圈之外的 vault 后面几轮还要用）
+        let vault = vault.clone();
+        run_db(db.clone(), move |db| {
+            crate::db::query::sticky::upsert(db, &vault, input)
+        })
+        .await?;
         float::open_sticky(&app, &db, &id).await?;
         ids.push(id);
         log::info("guide", &format!("放出演示便签「{title}」，共 {} 张", ids.len()));
@@ -139,7 +144,8 @@ async fn live_demo_ids(app: &AppHandle, db: &Db) -> AppResult<Vec<String>> {
     for id in stored.split(',').map(str::trim).filter(|s| !s.is_empty()) {
         let for_check = id.to_string();
         let exists = run_db(db.clone(), move |db| {
-            crate::db::query::sticky::get(db, &for_check).map(|row| row.is_some())
+            // 只问在不在：这一路不该为一张私密便签解一次密
+            crate::db::query::sticky::get_raw(db, &for_check).map(|row| row.is_some())
         })
         .await?;
         if exists {
@@ -178,8 +184,7 @@ async fn destroy_demo_notes(app: &AppHandle, db: Db, ids: &[String]) {
     }
 }
 
-/// 关引导窗 + 顺手销账。**顺序是刻意的**：先销账再关，但销账失败不许拦住关窗——
-/// 写不动只是下次启动多演一次，而"关不掉"是真的把人困住。
+/// 关引导窗 + 顺手销账：销账失败不许拦住关窗——写不动只是下次启动多演一次，"关不掉"才真把人困住。
 /// 销账摆在这条命令而不是窗内：窗上有 × 与 Esc 两条关法，写在窗内就得两处各写一遍。
 #[tauri::command]
 pub async fn close_guide_window(app: AppHandle) -> AppResult<()> {
@@ -203,9 +208,33 @@ pub async fn close_guide_window(app: AppHandle) -> AppResult<()> {
     guide::close(&app).await
 }
 
+/// 开口令窗。`intent` 是"这一次为哪张、干什么"——逐张解锁之后口令窗必须知道是哪一张
+/// （`private_reveal` 要一个 note id）；没有意图 = 从托盘「立即锁定私密便签」那条路开的，
+/// 那时不追问哪张，只给立口令 / 改密 / 重置这几条出路。
 #[tauri::command]
-pub async fn open_unlock_window(app: AppHandle) -> AppResult<()> {
-    unlock::open(&app).await
+pub async fn open_unlock_window(
+    app: AppHandle,
+    note_id: Option<String>,
+    purpose: Option<String>,
+) -> AppResult<()> {
+    let parsed = note_id.map(|id| unlock::UnlockIntent {
+        note_id: id,
+        purpose: match purpose.as_deref() {
+            Some("delete") => unlock::UnlockPurpose::Delete,
+            // 认不得的用途按"揭开"走：误把 delete 当 reveal 只是少问一句，反过来是多删一张
+            _ => unlock::UnlockPurpose::Reveal,
+        },
+    });
+    // 记账与开窗在 `unlock::open` 里同一条顺序：先换意图，再让窗去读
+    unlock::open(&app, parsed).await
+}
+
+/// 口令窗挂载时（以及意图变了的时候）读这一次的意图
+#[tauri::command]
+pub async fn unlock_intent(
+    intent: State<'_, unlock::IntentState>,
+) -> AppResult<Option<unlock::UnlockIntent>> {
+    Ok(intent.current())
 }
 
 #[tauri::command]
@@ -231,8 +260,7 @@ pub async fn close_group_stack(app: AppHandle, gid: String) -> AppResult<()> {
 
 // —— 拖拽进组的命中判定 ——
 
-/// 桌面上一扇浮窗的位置尺寸（**物理**像素，与 `moved` 事件同一套坐标，
-/// 前端拿着就能直接比，不需要再乘除缩放）。
+/// 桌面上一扇浮窗的位置尺寸（**物理**像素，与 `moved` 事件同一套坐标，前端不用乘除缩放）。
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FloatFrame {
@@ -248,11 +276,9 @@ pub struct FloatFrame {
 }
 
 /// 桌面上开着的浮窗矩形，一次给全。
-///
-/// 为什么非要这条命令：**系统拖着窗走的时候前端收不到 pointermove**（鼠标被系统
-/// 捕获），只有 `moved` 事件流。于是"我这一下压在谁身上"只能前端自己算——自己的位置
-/// 从 moved 拿，别人的位置就从这一份快照拿。快照在拖起时取一次就够（这一趟里别的窗
-/// 不会自己跑），不必逐帧问。隐藏的窗（星环那扇常驻窗）不参与：拖到它身上没有意义。
+/// 为什么非要这条命令：**系统拖着窗走的时候前端收不到 pointermove**（鼠标被系统捕获），只有
+/// `moved` 事件流——自己的位置从 moved 拿，别人的位置从这一份快照拿。拖起时取一次就够，不必逐帧问。
+/// 隐藏的窗（星环那扇常驻窗）不参与：拖到它身上没有意义。
 #[tauri::command]
 pub fn float_frames(app: AppHandle) -> Vec<FloatFrame> {
     let mut frames = Vec::new();
@@ -313,21 +339,14 @@ pub struct WorkArea {
     pub height: i64,
 }
 
-/// 便签窗报"内容画完了"，于是这扇窗才亮出来。
-///
-/// 建窗时 `visible: false`（见 `windows/factory.rs` 的 `reveal_timeout_ms`），为的是
-/// 不让他看到那块 WebView2 默认白。命令只作用在**调用方自己那扇窗**（`WebviewWindow`
-/// 由 Tauri 注入），前端报不了别的窗，也不需要传 label。
-/// 到点没来喊的兜底在 factory 那边：强行 show，绝不让便签不出现。
-///
-/// `focus` 给了 `false` 就只 show 不抢焦点——提醒卡那一扇走这条：一条到点的提醒
-/// 不该把用户正在打字的应用的焦点抢走（星环那条老理由，一模一样成立）。
-/// 默认拿焦点，所以别处（单窗、叠窗）一个字都不用改。
+/// 便签窗报"内容画完了"，于是这扇窗才亮出来（建窗时 `visible: false` 为的是不让他看到那块
+/// WebView2 默认白；到点没来喊的兜底在 factory：强行 show，绝不让便签不出现）。命令只作用在
+/// **调用方自己那扇窗**（`WebviewWindow` 由 Tauri 注入），不需要传 label。
+/// `focus` 给 `false` 就只 show 不抢焦点——提醒卡那一扇走这条；默认拿焦点，别处一个字都不用改。
 #[tauri::command]
 pub fn float_reveal(win: WebviewWindow, focus: Option<bool>) -> AppResult<()> {
     win.show().map_err(|e| AppError::new("WINDOW_SHOW", e.to_string()))?;
-    // 屏幕上真有东西了，开场就该收——这条同时管提醒卡与叠窗（它们也走 float_reveal）。
-    // 只投递不等回执，所以在这条同步命令里也不会卡主线程
+    // 屏幕上真有东西了开场就该收（这条也管提醒卡与叠窗）；只投递不等回执，同步命令里不卡主线程
     crate::splash::dismiss(crate::splash::Reason::Revealed);
     // 焦点这一步失败了不算什么：窗已经在了，宁可少个焦点也别回一个错让前端猜
     if focus.unwrap_or(true) {
@@ -336,13 +355,9 @@ pub fn float_reveal(win: WebviewWindow, focus: Option<bool>) -> AppResult<()> {
     Ok(())
 }
 
-/// 点提醒卡：收卡 + 把那张便签拉到眼前（组员由 `open_sticky` 并进叠窗并翻到那一张）。
-///
-/// **两端都要留日志**：作者报"点了『去看这张便签』没反应"，而前端那份 logger 只进内存与
-/// console（发布版看不见）——只有 Rust 这边记一行，下一次才分得清"命令没到"还是"到了但那扇
-/// 窗本来就在前台，所以看着像没动"。后一种是真的：所以这里 `unminimize` + `show` +
-/// `set_focus` 之后再 `ping` 一下，让那圈纸边替它答一声。
-/// 先收再开：那张可能已经被删了，卡照样该走。
+/// 点提醒卡：收卡 + 把那张便签拉到眼前（组员由 `open_sticky` 并进叠窗并翻到那一张）。先收再开：那张可能已被删了。
+/// **两端都要留日志**：前端 logger 只进内存与 console（发布版看不见），只有 Rust 这边记一行才分得清
+/// "命令没到"还是"窗本来就在前台看着像没动"——后一种真会发生，所以再 `ping` 一下让那圈纸边替它答一声。
 #[tauri::command]
 pub async fn reminder_open(app: AppHandle, db: State<'_, Db>, id: String) -> AppResult<()> {
     let db = db.inner().clone();
@@ -364,6 +379,34 @@ pub async fn reminder_open(app: AppHandle, db: State<'_, Db>, id: String) -> App
 #[tauri::command]
 pub fn reminder_dismiss(app: AppHandle) -> AppResult<()> {
     card::dismiss(&app);
+    Ok(())
+}
+
+/// 卡上那颗「稍后再响」：到期时刻推后 `reminder::SNOOZE_MS`、清掉这次的已弹标记，收卡，
+/// 并广播这一行变了（便签上那句"还有几分钟"要跟着改）。
+/// 先广播再收卡：`dismiss` 是 destroy，那一扇就没了，`emit_changed` 要拿它的 label 当写者
+#[tauri::command]
+pub async fn reminder_snooze(
+    win: WebviewWindow,
+    app: AppHandle,
+    db: State<'_, Db>,
+    id: String,
+) -> AppResult<()> {
+    let database = db.inner().clone();
+    let id_for_log = id.clone();
+    run_db(database, move |db| {
+        crate::db::query::reminder::snooze(db, &id, crate::db::query::sticky::now_ms())
+    })
+    .await?;
+    super::entity::emit_changed(&win, "sticky");
+    card::dismiss(&app);
+    log::info(
+        "reminder",
+        &format!(
+            "{id_for_log}：稍后再响（推后 {} 分钟）",
+            crate::db::query::reminder::SNOOZE_MS / 60_000
+        ),
+    );
     Ok(())
 }
 

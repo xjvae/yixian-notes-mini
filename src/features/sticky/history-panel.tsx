@@ -5,11 +5,12 @@
 // （叠窗里翻页翻到哪一张，历史就是哪一张的）。
 //
 // 口径：一版 = 这张**被换掉之前**的内容；打字流每分钟最多留一档；每张最新 50 条、7 天。
-// 普通便签的版本住主库明文表（`db/query/revision.rs`，走 IPC）；私密便签的版本住**封套**
-// （`store/private-backend.ts`）。
+// 普通便签的版本住主库明文表，私密便签的版本住密文表——**分岔在 Rust 那一侧**
+// （`commands/revision.rs` 按行上的密级走），这一层只发同一条命令。
 //
-// "私密的历史必须输口令才看得到"不需要这一层再做一道门：锁着的私密便签整面正文就是
-// 遮罩（`isMasked`），页脚连这颗钮都不在，压根走不到这里。这一层只管已解锁之后。
+// "私密的历史必须输口令才看得到"也不需要这一层再做一道门：锁着的私密便签整面正文就是
+// 遮罩（`isMasked`），页脚连这颗钮都不在，压根走不到这里；真走到了，Rust 那边锁着会直接
+// 抛 `PRIVATE_LOCKED`（私密的版本与私密的正文共用同一道门，没有第二条读路径）。
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { History, RotateCcw, X } from "lucide-react";
@@ -17,8 +18,7 @@ import { stickyRevisions, stickyRevert } from "@/platform/commands";
 import type { RevisionMeta } from "@/platform/contracts";
 import { noteTypeLabel } from "@/data/note-types";
 import { logger } from "@/platform/logger";
-import { sealedRevert, sealedRevisions } from "@/store/private-backend";
-import { refreshStore, updateNote } from "@/store/notes-store";
+import { refreshStore } from "@/store/notes-store";
 
 /** 与回收站那两处同一个节奏：第一击变确认键，3 秒不点自动退回 */
 const CONFIRM_RESET_MS = 3000;
@@ -37,14 +37,11 @@ function formatWhen(ms: number): string {
 
 export function HistoryPanel({
   noteId,
-  isPrivate,
   ink,
   accent,
   onClose,
 }: {
   noteId: string;
-  /** 私密便签的版本在封套里，读与回滚走另一条路 */
-  isPrivate: boolean;
   ink: string;
   accent: string;
   onClose: () => void;
@@ -55,14 +52,13 @@ export function HistoryPanel({
   const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const load = useCallback((): void => {
-    const fetch = isPrivate ? sealedRevisions(noteId) : stickyRevisions(noteId);
-    void fetch
+    void stickyRevisions(noteId)
       .then((list) => {
         setRows(list);
         setError(null);
       })
       .catch((err: unknown) => setError(String(err)));
-  }, [noteId, isPrivate]);
+  }, [noteId]);
 
   useEffect(() => {
     load();
@@ -71,25 +67,18 @@ export function HistoryPanel({
     };
   }, [load]);
 
-  /** 真的换回去。两条路：封套（私密）或主库表（普通） */
+  /** 真的换回去。私密与否由 Rust 按行上的密级分岔，这一层只发同一条命令 */
   const applyRevert = useCallback(
     async (seq: number): Promise<void> => {
-      if (isPrivate) {
-        // 先把**回滚前**这份强记成一版，再把那一版的内容落进视图。
-        // 落视图会触发一次 flush，而那次记录会因为"内容没变"跳过，不会多占一格
-        const content = await sealedRevert(noteId, seq);
-        updateNote(noteId, content);
-      } else {
-        // 这条绕过 store 直接写库（与 `sticky_set_group` 同一条路），而 store 跳过
-        // 自己发起的广播——不主动重读，这扇窗会一直停在回滚前那份内容上
-        await stickyRevert(noteId, seq);
-      }
+      // 这条绕过 store 直接写库（与 `sticky_set_group` 同一条路），而 store 跳过
+      // 自己发起的广播——不主动重读，这扇窗会一直停在回滚前那份内容上
+      await stickyRevert(noteId, seq);
       await refreshStore();
       // 回滚本身被记成一版，所以重读列表：刚被换掉的那一份必须出现在这里，
       // 否则"回滚回滚错了"就没有路了
       load();
     },
-    [isPrivate, noteId, load],
+    [noteId, load],
   );
 
   /** 两段确认：第一击只把这一行变成"确认恢复"，再击才真换 */

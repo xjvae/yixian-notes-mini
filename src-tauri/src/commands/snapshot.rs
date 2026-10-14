@@ -1,14 +1,9 @@
 // 快照 — 整库历史快照的产出、列出与一键恢复。
-//
 // 一份快照 = `backups\mini-<label>.db`（`VACUUM INTO` 的干净副本）**加一份同名的
-// `mini-<label>.private.json`**。封套必须跟着走：主库里的私密行只有空占位，真身全在
-// private.json 里，只恢复主库等于恢复出一库指向错乱的空壳。旧快照（这条规则之前产的）
-// 没有配套封套，恢复时如实说出来而不是假装完整。
-//
-// 恢复不动进程：ATTACH 快照 → 五张表整表换过去 → DETACH。SQLite 里被 ATTACH 进来的库
-// 与主库同属一个事务，所以中途失败就是整笔回滚，不会留下"三张表新的两张旧的"。
-// 换完库强制上锁：内存里那把会话密钥对应的是**旧**封套，继续解锁着要么读不出来，
-// 要么更糟——读出来是上一次会话的内容。
+// `mini-<label>.private.json`**：主库里的私密行只有空占位，真身全在 private.json 里，
+// 只恢复主库等于恢复出一库指向错乱的空壳；缺配套封套的老快照恢复时如实说出来。
+// 恢复不动进程：ATTACH 快照 → 每张表整表换过去 → DETACH，被 ATTACH 的库与主库同属一个
+// 事务，中途失败就是整笔回滚。换完强制上锁：内存里那把会话密钥对应的是**旧**封套。
 
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
@@ -26,8 +21,20 @@ use super::run_db;
 
 /// 保留最新多少份（含配套封套）。再往后的价值低于在目录里堆几百个文件
 pub const KEEP: usize = 10;
-/// 整库要换过去的表。全库只有这五张（见 `db/migrate.rs`），加表必须加在这里
-const TABLES: [&str; 5] = ["stickies", "groups", "settings", "window_state", "media"];
+/// 整库要换过去的表。全库正好这几张（见 `db/migrate.rs`），**加表必须加在这里**——
+/// 漏一张（历史版本就漏过）等于恢复后一次"回滚上一版"能把刚丢掉的内容原样塞回来。
+/// 老快照缺的表整张跳过而不是报错；对不上号的私密残骸由解锁时的孤儿清理收掉。
+const TABLES: [&str; 9] = [
+    "stickies",
+    "groups",
+    "settings",
+    "window_state",
+    "media",
+    "sticky_revisions",
+    "private_content",
+    "private_revision",
+    "private_keys",
+];
 const DB_PREFIX: &str = "mini-";
 const DB_SUFFIX: &str = ".db";
 const ENVELOPE_SUFFIX: &str = ".private.json";
@@ -67,9 +74,8 @@ fn envelope_backup_path(dir: &Path, label: &str) -> PathBuf {
     dir.join(format!("{DB_PREFIX}{label}{ENVELOPE_SUFFIX}"))
 }
 
-/// label 的合法形状：`YYYYMMDD-HHMMSS`，允许同秒避让用的 `-<序号>` 尾巴
-/// （`20261012-094703-2`）。它同时是文件名的一部分，所以这一格校验就是防路径穿越
-/// 的那一道——**恢复的入参来自前端**，不校验等于把文件名交给前端拼。
+/// label 的合法形状：`YYYYMMDD-HHMMSS`，允许同秒避让用的 `-<序号>` 尾巴。它同时是文件名的
+/// 一部分，这一格校验就是防路径穿越那一道——**恢复的入参来自前端**，不校验等于把文件名交给前端拼。
 fn label_is_valid(label: &str) -> bool {
     let bytes = label.as_bytes();
     if bytes.len() < 15 || bytes.len() > 18 {
@@ -94,8 +100,8 @@ fn label_is_valid(label: &str) -> bool {
     stamp_ok && tail_ok
 }
 
-/// 同一秒里再打一份时往后缀避让：`VACUUM INTO` 拒绝覆盖已存在的文件，而"一秒内点两次
-/// 立即备份"与"恢复的安全网正好撞上刚打的那一份"都会走到这里。
+/// 同一秒里再打一份时往后缀避让：`VACUUM INTO` 拒绝覆盖已存在的文件，一秒点两次与
+/// 恢复的安全网撞上刚打的那一份都会走到这里。
 fn free_label(dir: &Path, stamp: &str) -> String {
     if !db_path(dir, stamp).exists() {
         return stamp.to_string();
@@ -146,8 +152,7 @@ pub fn create(db: &Db, vault: &PrivateVault) -> AppResult<String> {
     Ok(label)
 }
 
-/// 只留最新 `KEEP` 份，返回剩下几份。删失败不炸（文件可能被别的工具开着）：
-/// 多留一份旧快照不是错误，把恢复这条路整个弄挂才是。
+/// 只留最新 `KEEP` 份，返回剩下几份。删失败不炸：多留一份旧快照不是错误，把恢复这条路整个弄挂才是
 fn prune(dir: &Path) -> AppResult<usize> {
     let mut labels = list_labels(dir)?;
     // label 就是零填充的本地时间，字符串序 = 时间序
@@ -203,6 +208,11 @@ pub fn list(db: &Db) -> AppResult<Vec<Snapshot>> {
 }
 
 /// 一键恢复到指定快照。
+///
+/// 次序是定死的：**先验这份快照齐不齐 → 存安全网 → 换库 → 换封套**。换库排在换封套之前，
+/// 因为库那一趟是一个事务（失败整笔回滚、现场原样），而封套是第二个文件——
+/// 反过来做就是"封套已经换而库没换"，那一刻所有私密便签都对不上号。
+/// 封套走 tmp+sync+rename（同 `private::write_atomic`），不拿 `fs::copy` 直接盖活的那份。
 pub fn restore(
     db: &Db,
     vault: &PrivateVault,
@@ -223,30 +233,59 @@ pub fn restore(
             format!("没有这份快照：{label}"),
         ));
     }
-    // 先给"恢复前的现在"存一份安全网：选错了还能一键回到这里。排在换表之前，
-    // 换表换到一半失败也留得下现场
+    // 验完再动任何东西：这两条都是"这份快照恢复不得"，报错时库与封套都还是原样
+    let (absent_tables, sealed_rows) = inspect_source(&source)?;
+    if !absent_tables.is_empty() {
+        return Err(AppError::new(
+            "SNAPSHOT_SCHEMA",
+            format!(
+                "这份快照早于私密层（没有 {}）：恢复它会把带私密标记的行换回来，而当前那批密文与键行\
+                 留在原地再也对不上号，且界面上什么都看不出来。要么选一份后来的快照，\
+                 要么先用「重置私密密码」清空私密内容再恢复这一份。",
+                absent_tables.join("、")
+            ),
+        ));
+    }
+    let envelope_snapshot = envelope_backup_path(&dir, label);
+    if sealed_rows > 0 && !envelope_snapshot.exists() {
+        return Err(AppError::new(
+            "SNAPSHOT_ENVELOPE",
+            format!(
+                "这份快照里有 {sealed_rows} 张私密便签的密文，却没有配套的封套（那份文件没跟着备份或被删了）：\
+                 恢复过去这些张永远解不开。库与封套都没有动过。"
+            ),
+        ));
+    }
+    // 先给"恢复前的现在"存一份安全网（选错了能一键回到这里）：排在换表之前才留得下现场
     let safety = create(db, vault)?;
-    // 上面那次清理有可能正好把要恢复的那份挤掉（它是最老的那一批）。此刻库还没动过，
-    // 直接说清楚，别去 ATTACH 一个刚被自己删掉的文件
+    // 上面那次清理可能正好把要恢复的挤掉（它是最老的那批）：此刻库还没动过，直接说清楚
     if !source.exists() {
         return Err(AppError::new(
             "SNAPSHOT_PRUNED",
             format!("快照 {label} 刚被保留策略清掉，库没有动过；可从 {safety} 之后重选"),
         ));
     }
-    let envelope_snapshot = envelope_backup_path(&dir, label);
     let mut warning = None;
+    let missing = swap_tables(&db.lock(), &source)?;
     if envelope_snapshot.exists() {
-        std::fs::copy(&envelope_snapshot, private::envelope_path(vault.dir()))
+        let bytes = std::fs::read(&envelope_snapshot)
+            .map_err(|e| AppError::new("SNAPSHOT", format!("快照封套读不出来：{e}")))?;
+        private::write_atomic(vault.dir(), &private::envelope_path(vault.dir()), &bytes)
             .map_err(|e| AppError::new("SNAPSHOT", format!("私密封套没换回来：{e}")))?;
-    } else {
-        warning = Some(
-            "这份快照没有配套的私密封套（那条规则之前产的老快照）：私密便签的真身仍是当前这一份，\
-             可能与恢复回来的行对不上。"
-                .to_string(),
-        );
+        // 盘上那份换了：内存里的 configured/damaged 要跟着重算，否则拒写/放行都对不上新那份
+        vault.rescan();
     }
-    swap_tables(&db.lock(), &source)?;
+    if !missing.is_empty() {
+        let note = format!(
+            "这份快照的 schema 里没有表 {}：那几张保持恢复前的内容，没有被换掉。",
+            missing.join("、")
+        );
+        log::warn("backup", &note);
+        warning = Some(match warning {
+            Some(existing) => format!("{existing} {note}"),
+            None => note,
+        });
+    }
     private::lock(vault);
     log::info(
         "backup",
@@ -262,14 +301,49 @@ pub fn restore(
     })
 }
 
-/// 五张表整表换成快照里那份。同属一个事务：中途任何一步失败 = 整笔回滚。
-fn swap_tables(conn: &Connection, source: &Path) -> AppResult<()> {
+/// 恢复前要先验的三张私密表。缺任何一张 = 这份快照早于私密层（1.2.9 之前）：
+/// 它那些 `private=1` 的行没有配套的密文表可换，而当前库里那些条留在原地再也对不上号
+const PRIVATE_TABLES: [&str; 3] = ["private_content", "private_revision", "private_keys"];
+
+/// 验这份快照能不能恢复：缺哪几张私密表、里面有几种密文。只读打开，动不到任何东西
+fn inspect_source(source: &Path) -> AppResult<(Vec<&'static str>, i64)> {
+    let snap = Connection::open_with_flags(
+        source,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )?;
+    let mut absent: Vec<&'static str> = Vec::new();
+    for table in PRIVATE_TABLES {
+        let n: i64 = snap.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [table],
+            |row| row.get(0),
+        )?;
+        if n != 1 {
+            absent.push(table);
+        }
+    }
+    let sealed = if absent.contains(&"private_content") {
+        0
+    } else {
+        snap.query_row("SELECT COUNT(*) FROM private_content", [], |row| row.get(0))?
+    };
+    Ok((absent, sealed))
+}
+
+/// 每张表整表换成快照里那份。同属一个事务：中途任何一步失败 = 整笔回滚。
+/// 返回快照里根本没有的表名（老快照缺 `sticky_revisions` / `media`），调用方如实报出去。
+fn swap_tables(conn: &Connection, source: &Path) -> AppResult<Vec<&'static str>> {
     conn.execute("ATTACH DATABASE ?1 AS snap", [source.to_string_lossy().as_ref()])?;
+    let mut missing: Vec<&'static str> = Vec::new();
     let result = (|| -> AppResult<()> {
         let tx = conn.unchecked_transaction()?;
         for table in TABLES {
-            // 列数对不上（快照来自更旧的 schema）会在这里当场报错、事务回滚，
-            // 主库原样——半新半旧的库比恢复失败更糟
+            if !has_table(&tx, table)? {
+                // 那张表是后来才加的，这份快照早于它：主库这张原样留着，别报错
+                missing.push(table);
+                continue;
+            }
+            // 列数对不上（快照来自更旧的 schema）当场报错、事务回滚，主库原样——半新半旧比恢复失败更糟
             tx.execute_batch(&format!(
                 "DELETE FROM main.{table}; \
                  INSERT INTO main.{table} SELECT * FROM snap.{table};"
@@ -282,11 +356,21 @@ fn swap_tables(conn: &Connection, source: &Path) -> AppResult<()> {
     if let Err(e) = conn.execute("DETACH DATABASE snap", []) {
         log::warn("backup", &format!("快照脱钩失败（不影响本次结果）：{e}"));
     }
-    result
+    result?;
+    Ok(missing)
 }
 
-/// 恢复动了整库，所以三类变更全发：便签与组重读、设置重读、私密状态重读（遮罩落下）。
-/// writer 用 "snapshot"——发起方不是一扇窗。
+/// 快照（已 ATTACH 成 `snap`）里有没有这张表。表名只来自 `TABLES` 常量，不掺用户输入。
+fn has_table(conn: &Connection, table: &str) -> AppResult<bool> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM snap.sqlite_master WHERE type = 'table' AND name = ?1",
+        [table],
+        |row| row.get(0),
+    )?;
+    Ok(n == 1)
+}
+
+/// 恢复动了整库，三类变更全发（便签与组、设置、私密状态遮罩落下）；writer 用 "snapshot"——发起方不是一扇窗
 fn emit_all(app: &AppHandle) {
     for kind in ["sticky", "group", "setting"] {
         let payload = serde_json::json!({ "writer": "snapshot", "kind": kind });
@@ -317,10 +401,15 @@ pub async fn snapshot_restore(
 
 #[cfg(test)]
 mod tests {
+    /// 私密层没启用时的那把 vault：这些用例只测本模块的事，不该为它们各建一套封套
+    fn off() -> crate::data::private::PrivateVault {
+        crate::data::private::PrivateVault::disabled("snapshot")
+    }
+
     use super::*;
     use crate::db::models::StickyInput;
-    use crate::db::query::{settings, sticky};
-    use rusqlite::Connection;
+    use crate::db::query::{revision, settings, sticky};
+    use rusqlite::{params, Connection};
 
     #[test]
     fn 快照名只认那个形状() {
@@ -405,31 +494,116 @@ mod tests {
         db
     }
 
-    /// 恢复要真的把五张表换回那一刻：改过的退回、新增的没了、删掉的回来、设置跟着回。
-    /// 这是这条功能唯一要紧的判据，所以直接测换表那一步——`restore` 外壳要 AppHandle
-    /// 才能广播，测试里没有应用实例，为测它造一个不值。
+    /// `TABLES` 那份清单必须与迁移产出的表**一一对得上**：加表没进名单 = 恢复时那张表原样留着
+    /// 旧内容、不报错也不提示，库从此半新半旧。这种错只有从 `sqlite_master` 现读才拦得住。
     #[test]
-    fn 换表把五张表整份换回快照那一刻() {
+    fn 迁移出的表与恢复名单一一对得上() {
+        let db = db_on_disk("coverage");
+        let conn = db.lock();
+        let mut stmt = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+            .expect("列表");
+        let migrated: Vec<String> = stmt
+            .query_map([], |row| row.get(0))
+            .expect("读表名")
+            .map(|name| name.expect("一行表名"))
+            .collect();
+        drop(stmt);
+        drop(conn);
+        let _ = std::fs::remove_dir_all(db.dir());
+
+        assert!(!migrated.is_empty(), "迁移没建出任何表");
+        for table in &migrated {
+            assert!(
+                TABLES.contains(&table.as_str()),
+                "表 {table} 没进快照恢复名单：迁移加表要同时加 TABLES"
+            );
+        }
+        for table in TABLES {
+            assert!(
+                migrated.iter().any(|name| name == table),
+                "恢复名单里的 {table} 在库里根本不存在：名字写错了，或那张表已被删掉"
+            );
+        }
+    }
+
+    /// 恢复前那一趟验收：缺私密层哪张表就报哪张（`restore` 据此整趟拒绝，库与封套都不动），
+    /// 三张齐就给个密文条数——有条数而没配套封套同样不许恢复
+    #[test]
+    fn 缺私密表的快照被验出来() {
+        let db = db_on_disk("inspect");
+        let vault = PrivateVault::scan(db.dir());
+        let label = create(&db, &vault).expect("打快照");
+        let source = db_path(&backups_dir(&db), &label);
+        let (absent, sealed) = inspect_source(&source).expect("验");
+        assert!(absent.is_empty(), "自己这份三张表都该有：{absent:?}");
+        assert_eq!(sealed, 0, "还没写过私密内容");
+
+        for missing in ["private_keys", "private_revision", "private_content"] {
+            let fresh = create(&db, &vault).expect("再打一份");
+            let path = db_path(&backups_dir(&db), &fresh);
+            {
+                let snap = Connection::open(&path).expect("开副本");
+                snap.execute(&format!("DROP TABLE {missing}"), []).expect("删表");
+            }
+            let (absent, sealed) = inspect_source(&path).expect("再验");
+            assert_eq!(absent, vec![missing], "缺的那张要报出来");
+            assert_eq!(sealed, 0, "表都不齐时不去数它");
+        }
+        let _ = std::fs::remove_dir_all(db.dir());
+    }
+
+    /// 数密文条数：`restore` 拿它判"有私密内容却没有配套封套"这一种快照
+    #[test]
+    fn 验收数得出快照里有几张密文便签() {
+        let db = db_on_disk("inspect-sealed");
+        let vault = PrivateVault::scan(db.dir());
+        let label = create(&db, &vault).expect("打快照");
+        let path = db_path(&backups_dir(&db), &label);
+        {
+            let snap = Connection::open(&path).expect("开副本");
+            for n in ["a", "b"] {
+                snap.execute(
+                    "INSERT INTO private_content (note_id, content, updated_at) VALUES (?1, ?2, 1)",
+                    params![n, vec![7u8; 8]],
+                )
+                .expect("塞一条");
+            }
+        }
+        let (absent, sealed) = inspect_source(&path).expect("验");
+        assert!(absent.is_empty());
+        assert_eq!(sealed, 2, "两条密文 = 两张要配套封套");
+        let _ = std::fs::remove_dir_all(db.dir());
+    }
+
+    /// 钉住每张表整份换回那一刻：改过的退回、新增的没了、删掉的回来、设置与历史版本跟着回。
+    /// 只测换表这一步——`restore` 外壳要 AppHandle 才能广播，为测它造一个不值。
+    #[test]
+    fn 换表把每张表整份换回快照那一刻() {
         let db = db_on_disk("swap");
         let vault = PrivateVault::scan(db.dir());
-        sticky::upsert(&db, input("keep", "一直都在")).expect("写 keep");
-        sticky::upsert(&db, input("gone", "快照里有它")).expect("写 gone");
+        sticky::upsert(&db, &off(), input("keep", "一直都在")).expect("写 keep");
+        sticky::upsert(&db, &off(), input("gone", "快照里有它")).expect("写 gone");
         settings::set(&db, "theme", "light").expect("写设置");
+        // 快照之前先给 keep 灌一版历史，让这份快照真的带着 `sticky_revisions`
+        revision::record(&db.lock(), "keep", sticky::now_ms(), true, false).expect("灌一版");
 
         let label = create(&db, &vault).expect("打快照");
         assert!(list(&db).expect("列快照").iter().any(|row| row.label == label));
 
-        // 快照之后：改一张、硬删快照里就有的一张、加一张、翻一个设置
-        sticky::upsert(&db, input("keep", "改过的")).expect("改 keep");
+        // 快照之后：改一张、硬删快照里就有的一张、加一张、翻一个设置、再记一版
+        sticky::upsert(&db, &off(), input("keep", "改过的")).expect("改 keep");
         sticky::delete(&db, "gone", true).expect("硬删 gone");
-        sticky::upsert(&db, input("added", "快照之后才有")).expect("写 added");
+        sticky::upsert(&db, &off(), input("added", "快照之后才有")).expect("写 added");
         settings::set(&db, "theme", "dark").expect("翻设置");
-        assert!(sticky::get(&db, "added").expect("读").is_some());
-        assert!(sticky::get(&db, "gone").expect("读").is_none());
+        revision::record(&db.lock(), "keep", sticky::now_ms(), true, false).expect("再记一版");
+        assert!(sticky::get(&db, &off(), "added").expect("读").is_some());
+        assert!(sticky::get(&db, &off(), "gone").expect("读").is_none());
 
-        swap_tables(&db.lock(), &db_path(&backups_dir(&db), &label)).expect("换表");
+        let missing = swap_tables(&db.lock(), &db_path(&backups_dir(&db), &label)).expect("换表");
+        assert!(missing.is_empty(), "名单里每张表这份快照都该有：{missing:?}");
 
-        let rows = sticky::list(&db, false).expect("读全量");
+        let rows = sticky::list(&db, &off(), false).expect("读全量");
         let ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
         assert!(ids.contains(&"keep"), "快照里的行要在：{ids:?}");
         assert_eq!(
@@ -442,10 +616,46 @@ mod tests {
         assert_eq!(
             settings::get(&db, "theme").expect("读设置").as_deref(),
             Some("light"),
-            "设置项也在五张表里，跟着回"
+            "设置项也在换表的名单里，跟着回"
         );
+        let revisions = revision::list(&db.lock(), "keep").expect("列版本");
+        assert_eq!(revisions.len(), 1, "只留快照那一刻的那一版：{revisions:?}");
+        assert_eq!(revisions[0].title, "一直都在");
         // ATTACH 必须已经脱钩：留着的话下一次 VACUUM INTO 会被占着的库挡住
         create(&db, &vault).expect("恢复后还能再打一份快照");
+        let _ = std::fs::remove_dir_all(db.dir());
+    }
+
+    /// 钉住老快照缺的那张表整份跳过并报回名字，而不是在 `INSERT ... snap.sticky_revisions` 上炸串
+    #[test]
+    fn 老快照缺的表跳过而不是报错() {
+        let db = db_on_disk("legacy");
+        let vault = PrivateVault::scan(db.dir());
+        sticky::upsert(&db, &off(), input("keep", "一直都在")).expect("写 keep");
+        let label = create(&db, &vault).expect("打快照");
+        // 造一份"那张表还没有"的快照：直接把已经落盘的副本里那张表删掉
+        let source = db_path(&backups_dir(&db), &label);
+        {
+            let snap = Connection::open(&source).expect("开副本");
+            snap.execute("DROP TABLE sticky_revisions", []).expect("删表");
+        }
+        sticky::upsert(&db, &off(), input("keep", "改过的")).expect("改 keep（内部记一版）");
+        revision::record(&db.lock(), "keep", sticky::now_ms(), true, false).expect("再记一版");
+        let before = revision::list(&db.lock(), "keep").expect("列版本").len();
+        assert_eq!(before, 2, "用例自己先把历史灌出来");
+
+        let missing = swap_tables(&db.lock(), &source).expect("缺表不该报错");
+        assert_eq!(missing, vec!["sticky_revisions"], "只跳过那一张");
+        assert_eq!(
+            sticky::get(&db, &off(), "keep").expect("读").expect("在").title,
+            "一直都在",
+            "其余各张照旧换回快照那一刻"
+        );
+        assert_eq!(
+            revision::list(&db.lock(), "keep").expect("列版本").len(),
+            before,
+            "缺的那张整份跳过，当前的历史一条不动"
+        );
         let _ = std::fs::remove_dir_all(db.dir());
     }
 
@@ -473,8 +683,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 不足保留线时一个都不许删。这条钉的是 `split_off` 的下标：它越过 len 会当场
-    /// panic，而"快照还没攒够 10 份"是每个人头几天的常态
+    /// 钉住不足保留线时一个都不许删——这条盯的是 `split_off` 的下标：越过 len 会当场 panic，而"没攒够 10 份"是常态
     #[test]
     fn 不到保留线一个都不删() {
         let dir = temp_dir_for("few");

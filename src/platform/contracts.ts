@@ -1,8 +1,6 @@
-// 跨语言契约 — 前端唯一镜像。Rust 侧的 serde 字段名必须与这里逐字一致，
-// 改任何一边都要同时改另一边并跑 `npm run test`（契约用例钉着）。
+// 跨语言契约 — 前端唯一镜像。Rust 侧的 serde 字段名必须与这里逐字一致，改任何一边都要同时改另一边。
 //
-// 设计决定：**Row 与 Entity 是同一个类型**（StickyNote）——旧架构里"线上形状"与
-// "运行时形状"分离是 localStorage 字符串键时代的遗产；新数据核里 store 直接持有
+// 设计决定：**Row 与 Entity 是同一个类型**（StickyNote）——数据核里 store 直接持有
 // 线上类型，省掉一整层双向映射。时间戳由 Rust 权威生成，写入侧（StickyInput）不携带。
 
 export type StickyContentType = "text" | "todo" | "reminder" | "timeline";
@@ -71,9 +69,7 @@ export interface StickyNote {
   docked: boolean;
   dockEdge: DockEdge | null;
   /**
-   * 随内容自动长高，**三态**：null = 没表过态，跟全局那个开关（settings 的
-   * `sticky.auto_size`）走；true / false = 这张强制自动 / 强制固定。
-   * 压成布尔就分不开"跟全局走"与"我就是要固定"——那是这个模式唯一的全局出口。
+   * 随内容自动长高，**三态**：null = 跟全局开关（`sticky.auto_size`）走；true/false = 这张强制。
    * 开着自动时**不往 width/height 写**，手拉的固定值原样躺在行里，关掉那一刻回得去。
    */
   autoSize: boolean | null;
@@ -87,17 +83,17 @@ export type StickyInput = Omit<StickyNote, "createdAt" | "updatedAt" | "deletedA
 
 /**
  * 组合行（GroupRow 的镜像）。成员关系不住这里——`StickyNote.groupId` 是唯一住址，
- * 张数与"空组"全是算出来的。这行只有叫什么、什么色、开合、叠窗几何。
+ * 张数与"空组"全是算出来的；这行只有名字、颜色、开合、叠窗几何。
  */
 export interface StickyGroup {
   id: string;
   name: string;
   color: string | null;
   collapsed: boolean;
-  /** 这一叠贴在边上（20px 细丝）。与单窗那两列同意义（迁移 0003 / 0008） */
+  /** 这一叠贴在边上（20px 细丝），与单窗那两列同意义 */
   docked: boolean;
   dockEdge: DockEdge | null;
-  /** 叠窗几何，逻辑像素；null = 未摆过位（开窗路径级联落点） */
+  /** 叠窗几何，口径同 StickyNote 的 x/y/width/height */
   x: number | null;
   y: number | null;
   width: number | null;
@@ -106,25 +102,36 @@ export interface StickyGroup {
   updatedAt: number;
 }
 
-/** 首屏引导：一次 IPC 拿齐挂载前的全部数据 */
 export interface Bootstrap {
   stickies: StickyNote[];
 }
 
 /** 主库变更广播。writer = 写者窗口 label，本窗据此跳过回灌；
- * kind: "setting" = 设置项变了（scheme 等各自监听重读），payload 不带值 */
+ * kind: "setting" = 设置项变了（scheme 等各自监听重读），payload 不带值；
+ * note: 写者刚落地的那一张（只有单实体那条路带），收方据此只合那一张、不整库重拉 */
 export interface DbChangedEvent {
   writer: string;
   kind: "sticky" | "group" | "setting";
+  note?: StickyNote;
 }
 
-/** 检索命中。正文供摘要展示，私密便签不进检索（见 Rust 侧 search.rs） */
+/** 检索命中。清单类与时间轴类的正文住在 items / timeline 上而不是 body 上，摘要要从它们取；
+ * 私密便签不进检索（见 Rust 侧 search.rs） */
 export interface SearchHit {
   id: string;
   title: string;
   body: string;
   contentType: StickyContentType;
   theme: string;
+  items: StickyItem[];
+  timeline: TimelineEntry[];
+}
+
+/** 一次检索的结果。`privateSkipped` 是这次**根本没参与**的私密便签张数——
+ * 不说这句，空结果会被读成"我那张便签丢了" */
+export interface SearchOutcome {
+  hits: SearchHit[];
+  privateSkipped: number;
 }
 
 /** 当前显示器工作区（物理像素；前端按自身缩放系数转逻辑像素） */
@@ -136,44 +143,27 @@ export interface WorkArea {
 }
 
 /**
- * 封套里存的一版内容。口径与主库那张明文历史表一致：只有内容字段，没有摆位。
- * `contentType` 跟着走——回滚一版清单到文本时，类型本身也是那一版的一部分。
+ * 私密层状态。**没有"整层开着"这一格**（迁移 0012）：`revealed` 是此刻已揭开的那几张的
+ * id，前端蒙不蒙每一张都问这一份。
  */
-export interface SealedContent {
-  title: string;
-  body: string;
-  contentType: StickyContentType;
-  items: StickyItem[];
-  timeline: TimelineEntry[];
-  tags: string[];
-}
-
-/** 私密便签的某一版历史。整份连封套一起加密，所以锁着就读不到 */
-export interface SealedRevision {
-  seq: number;
-  createdAt: number;
-  content: SealedContent;
-}
-
-/**
- * 私密便签锁在 private.json 里的真身。其余字段（几何/主题/标记）留在主库明文。
- * `revisions` 是这条的私有历史：明文表（`sticky_revisions`）压根不收私密便签，
- * 真身只能跟着封套走——代价是"看历史"和"看便签"共用同一道口令门。
- */
-export interface SealedText extends SealedContent {
-  revisions?: SealedRevision[];
-}
-
-/** 私密层状态：configured = 盘上有封套；unlocked = 会话密钥在内存里 */
 export interface PrivateStatus {
+  /** 盘上有合法封套 = 设过私密密码 */
   configured: boolean;
-  unlocked: boolean;
+  /** 那份读不出来（坏了 / 版本不认识）。与 configured=false 同时出现的意思是"有东西但打不开"，
+   *  此刻往私密上写一律停手 */
+  damaged: boolean;
+  revealed: string[];
+}
+
+/** 口令窗这一次的意图：为哪张、干什么。与 Rust `windows::unlock::UnlockIntent` 同形状 */
+export interface UnlockIntent {
+  noteId: string;
+  purpose: "reveal" | "delete";
 }
 
 /**
- * 一份整库快照 = `backups\mini-<label>.db` 加同名的私密封套副本。
- * `label` 是 `20261012-094703` 形态（同秒再打一份会带 `-2` 尾巴），
- * 恢复命令只认这个形状——它会被拼进文件名。
+ * 一份整库快照 = `backups\mini-<label>.db` 加同名私密封套副本。`label` 是
+ * `20261012-094703` 形态（同秒再加 `-2`）；恢复命令拿它拼文件名，只认这个形状。
  */
 export interface Snapshot {
   label: string;
@@ -194,9 +184,8 @@ export interface RestoreReport {
 }
 
 /**
- * 一张便签的某一版历史。存的是这张**被换掉之前**的内容形状（理由见
- * `migrations/0009_revisions.sql`），所以列表里那一行读作"回到这一刻之前"。
- * 私密便签不记版本，列表会是空的。
+ * 一张便签的某一版历史。存的是**被换掉之前**的内容形状（见 `migrations/0009_revisions.sql`），
+ * 列表那一行读作"回到这一刻之前"。私密便签不记版本，列表恒空。
  */
 export interface RevisionMeta {
   seq: number;
@@ -208,9 +197,8 @@ export interface RevisionMeta {
 }
 
 /**
- * 全局快捷键当前生效绑定。key 空串 = 显式停用。
- * `bound` = 系统有没有真的收下这个键；false 表示**按下去什么都不发生**
- * （被别的程序占着），界面要把它和"已停用"分开说。
+ * 全局快捷键当前生效绑定。key 空串 = 显式停用。`bound` = 系统真的收下了这个键；
+ * false = 按下去什么都不发生（被别的程序占着），界面要把它和"已停用"分开说。
  */
 export interface HotkeyBinding {
   action: string;
@@ -218,10 +206,7 @@ export interface HotkeyBinding {
   bound: boolean;
 }
 
-/**
- * 一张图存进去之后的元数据（media_save 的返回）。
- * 正文里那句 `![…](media://id)` 只用到 id，宽高是给渲染层按比例占位的。
- */
+/** media_save 的返回。正文引用只用到 id；宽高给渲染层占位 */
 export interface MediaMeta {
   id: string;
   noteId: string;
@@ -232,16 +217,15 @@ export interface MediaMeta {
   enc: boolean;
 }
 
-/** 一张图的字节（media_get 的返回；命令本身可以是 null = 库里没这行） */
+/** media_get 的返回（命令本身可为 null = 库里没这行） */
 export interface MediaBytes {
   mime: string;
   dataBase64: string;
 }
 
 /**
- * 桌面上一扇浮窗的矩形（**物理**像素，与 moved 事件同一套坐标，拿来就能比）。
- * 拖拽进组的命中判定用：系统拖着窗走的时候前端收不到 pointermove，
- * "我压在谁身上"只能自己算，别人那份矩形就得一次拿全。
+ * 桌面浮窗矩形（**物理**像素，与 moved 事件同一套坐标）。拖拽进组命中判定用：
+ * 系统拖着窗走时前端收不到 pointermove，只能自己算——别人那份矩形要一次拿全。
  */
 export interface FloatFrame {
   label: string;
@@ -267,15 +251,18 @@ export interface HookStatus {
 /** 事件名常量：拼错是编译错误 */
 export const DB_CHANGED = "db:changed";
 export const PRIVATE_CHANGED = "store:private-changed";
-/**
- * 口令窗被关掉（解锁成功收尾也算）。负载是它的 label。
- * 挂起的删除动作靠这条收口：见 `src/window/private-gate.ts`。
- */
+/** 口令窗被关掉（解锁成功收尾也算），负载是它的 label。挂起的删除动作靠这条收口（`src/window/private-gate.ts`） */
 export const UNLOCK_DISMISSED = "unlock:dismissed";
 /**
- * 开机启动翻了（托盘那一条勾也会发它）。负载就是新的实际状态。
- * 事实来源是 Windows 注册表，不是库：这条只是"去重读一遍"的通知。
+ * 口令窗还开着而**意图变了**（人点了另一张的蒙版）：窗是复用的，挂载时读到的 noteId
+ * 已旧，收到这条要重读 `unlock_intent`。
  */
+export const UNLOCK_INTENT = "unlock:intent";
+/**
+ * **这一发口令验过了**，负载是当时的意图。删除那条路只验身份不开卡——"窗关了"≠"口令过了"。
+ */
+export const UNLOCK_VERIFIED = "unlock:verified";
+/** 开机启动翻了（托盘那条勾也会发），负载是新实际状态。只是"去重读一遍"的通知，事实源在注册表 */
 export const AUTOSTART_CHANGED = "app:autostart-changed";
 /** 让某扇叠窗翻到指定那张（点搜索结果 / 归组 / 回收站恢复；窗已在了才用得上） */
 export const STICKY_REVEAL = "sticky:reveal";
@@ -294,13 +281,12 @@ export interface StickyRevealEvent {
   stickyId: string;
 }
 
-/** 到点提醒换内容的事件名（提醒卡已经在那儿了，第二条来了就把它换成新的） */
+/** 到点提醒来了新内容（卡已在场就把它换成新的） */
 export const REMINDER_SHOW = "reminder:show";
 
 /**
- * 提醒卡上要写的东西（`windows/card.rs` 的 Card 镜像）。
- * `title`/`text` 在 Rust 那边已经按私密口径洗过——私密的换成中性文案，
- * 所以这里**不许**再拿它去查那张便签（一查就把私密内容画到了一张不锁的卡上）。
+ * 提醒卡内容（`windows/card.rs` 的 Card 镜像）。`title`/`text` 在 Rust 那边已按私密口径
+ * 洗成中性文案——**不许**再拿它去查那张便签（一查就把私密内容画到不锁的卡上）。
  */
 export interface ReminderCardPayload {
   title: string;

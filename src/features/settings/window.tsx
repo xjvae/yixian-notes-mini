@@ -17,6 +17,14 @@ import type { SchemeSetting } from "@/data/scheme";
 import { changeGroupPresentation, useGroupPresentation } from "@/data/group-presentation";
 import type { GroupPresentation } from "@/data/group-presentation";
 import { setAutoSizeDefault, useAutoSizeDefault } from "@/data/auto-size-default";
+import { setLockAfterMark, useLockAfterMark } from "@/data/lock-after-mark";
+import type { LockAfterMark } from "@/data/lock-after-mark";
+import {
+  AUTO_LOCK_DEFAULT_MIN,
+  AUTO_LOCK_KEY,
+  AUTO_LOCK_OPTIONS,
+  autoLockMinutes,
+} from "@/data/auto-lock";
 import { listen } from "@/platform/bridge";
 import {
   autostartGet,
@@ -54,22 +62,12 @@ const GROUP_VIEW_OPTIONS: ReadonlyArray<{
   { value: "accordion", label: "手风琴", hint: "一列到底，点标题行就地展开" },
 ];
 
-/** 私密层自动上锁：设置键与档位。默认档必须与 Rust `autolock.rs` 的 `DEFAULT_MINUTES` 同一个数 */
-const AUTO_LOCK_KEY = "private.auto_lock_min";
-const AUTO_LOCK_DEFAULT_MIN = 5;
-const AUTO_LOCK_OPTIONS: ReadonlyArray<{ value: number; label: string }> = [
-  { value: 0, label: "不锁" },
-  { value: 1, label: "1 分钟" },
-  { value: AUTO_LOCK_DEFAULT_MIN, label: `${AUTO_LOCK_DEFAULT_MIN} 分钟` },
-  { value: 15, label: "15 分钟" },
-  { value: 30, label: "30 分钟" },
+/** 输完口令把这张标记成私密之后怎么办。三档，控件与上面那组一样 */
+const LOCK_AFTER_OPTIONS: ReadonlyArray<{ value: LockAfterMark; label: string }> = [
+  { value: "never", label: "不锁" },
+  { value: "ask", label: "每次问我" },
+  { value: "now", label: "立即锁" },
 ];
-
-/** 缺键与脏值回到默认档——与 `minutes_from` 同一条口径（脏值不许把锁悄悄关掉） */
-function autoLockMinutes(stored: string | null): number {
-  const parsed = Number.parseInt(stored ?? "", 10);
-  return parsed >= 0 && parsed <= 1440 ? parsed : AUTO_LOCK_DEFAULT_MIN;
-}
 
 /** 「恢复」的两段确认与回收站那两条同一个节奏：第一击变确认键，3 秒不点自动退回 */
 const RESTORE_RESET_MS = 3000;
@@ -118,6 +116,8 @@ export function SettingsWindow() {
   const [backingUp, setBackingUp] = useState(false);
   /** null = 还没读到（那一瞬所有档都不画选中，不猜一个给人看） */
   const [autoLockMin, setAutoLockMin] = useState<number | null>(null);
+  /** 标记私密后的锁档：模块级状态已在 boot 读过库，这里只是订阅着画 */
+  const lockAfter = useLockAfterMark();
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [snapshotError, setSnapshotError] = useState<string | null>(null);
   /** 恢复成功要重读的那一批：这一窗是"关=藏起来"的，不重载就停在恢复前的读数上 */
@@ -353,7 +353,7 @@ export function SettingsWindow() {
             每张便签页脚那个按钮还能单独翻（跟随全局 / 强制自动 / 强制固定三档）。
           </p>
           <p className="mt-2 text-xs text-[var(--panel-ink)]">
-            私密便签：便签窗内多久没操作就自动上锁
+            私密便签：揭开的那几张，便签窗内多久没操作就蒙回
           </p>
           <div
             role="radiogroup"
@@ -384,9 +384,46 @@ export function SettingsWindow() {
             })}
           </div>
           <p className="mt-1.5 text-[11px] text-[var(--panel-muted)]">
-            只认便签窗里的点击、按键与滚轮——在设置窗或搜索窗里打字不算续期。到点那一锁
-            与托盘那条「锁定私密层」是同一条路：密钥只从内存清掉，盘上的封套原样，
-            重输口令就回来。改档即时生效，不用重启。
+            只认便签窗里的点击、按键与滚轮——在设置窗或搜索窗里打字不算续期。到点那一发
+            与托盘那条「立即锁定私密便签」是同一条路：**把揭开的那几张一起蒙回**，每张的钥匙
+            只从内存清掉，盘上的封套与密文原样，回到那张便签上重输口令就回来。
+            逐张模型里没有"只蒙回其中几张"这种半动作。改档即时生效，不用重启。
+          </p>
+          <p className="mt-2 text-xs text-[var(--panel-ink)]">
+            输完口令把一张便签标记成私密之后
+          </p>
+          <div
+            role="radiogroup"
+            aria-label="标记私密后是否立即锁回私密层"
+            className="mt-1.5 flex flex-wrap gap-1.5"
+          >
+            {LOCK_AFTER_OPTIONS.map((option) => {
+              const active = lockAfter === option.value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  onClick={() => setLockAfterMark(option.value)}
+                  className="rounded-md border px-3 py-1.5 text-xs transition-colors"
+                  style={{
+                    borderColor: active ? "var(--panel-ink)" : "var(--panel-border)",
+                    backgroundColor: active ? "var(--panel-hover)" : "transparent",
+                    color: "var(--panel-ink)",
+                    fontWeight: active ? 600 : 400,
+                  }}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
+          <p className="mt-1.5 text-[11px] text-[var(--panel-muted)]">
+            只管"这张还没揭开、点标记私密于是弹口令窗"那一条路：输完口令这张自动补上标记，
+            然后按这里的选择蒙回去、不蒙、还是当场问一句（问的话是页脚那颗锁钮变 5
+            秒的确认态， 点它才锁）。这一张已经开着时点标记不会问——那一下你没输过密码。
+            删私密便签那道口令门补完之后也不问，蒙回去只会挡住你确认刚删了什么。
           </p>
           <button
             type="button"
@@ -482,8 +519,8 @@ export function SettingsWindow() {
           )}
           <p className="mt-1.5 text-[11px] text-[var(--panel-muted)]">
             恢复是整库换回那一刻：现在的数据不会丢，它会先被自动存成一份新快照。
-            换完私密层会**当场锁上**（内存里那把钥匙对应的是换掉之前的封套），
-            重输口令即可。所有开着的便签窗会自己重读。
+            换完揭开的那几张会**当场蒙回**（内存里那些钥匙对应的是换掉之前的封套），
+            回到那张便签上重输口令即可。所有开着的便签窗会自己重读。
           </p>
         </Section>
 

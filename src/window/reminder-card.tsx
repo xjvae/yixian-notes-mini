@@ -7,8 +7,8 @@
 //
 // 长什么样：**从那叠纸上撕下来的一张**，不是一个系统对话框。底色/墨色/那道脊都取自
 // 这张便签自己的主题（payload 里的 `theme` 键 → 同一个 `themeColors`）。
-// 整张卡就是"去看这张便签"这一个按钮（一扇 320×88 的弹窗，还要人瞄准一颗小钮是跟自己
-// 过不去），× 是它旁边唯一的例外：绝对定位的兄弟，不做嵌套 button。
+// 整张卡就是"去看这张便签"这一个按钮（一扇 320×104 的弹窗，还要人瞄准一颗小钮是跟自己
+// 过不去）；× 与「10 分钟后再响」是它旁边仅有的两颗兄弟（不能再往按钮里套按钮）。
 //
 // 三条纪律：
 //  · 文案**只从 payload 拿**，不许按 stickyId 去 store 里查那张便签：私密的标题和正文
@@ -22,7 +22,7 @@ import { useCallback, useEffect, useState } from "react";
 import { X } from "lucide-react";
 import { themeColors } from "@/data/theme";
 import { useScheme } from "@/data/scheme";
-import { reminderDismiss, reminderOpen } from "@/platform/commands";
+import { reminderDismiss, reminderOpen, reminderSnooze } from "@/platform/commands";
 import { REMINDER_SHOW } from "@/platform/contracts";
 import type { ReminderCardPayload } from "@/platform/contracts";
 import { listen } from "@/platform/bridge";
@@ -65,6 +65,14 @@ export function ReminderCard({ initial }: { initial: ReminderCardPayload }) {
       logger.caught(SCOPE, "收卡失败", error),
     );
   }, []);
+
+  /** 稍后再响：整条卡就是"要不要现在处理它"，12 秒自己走不等于这条不存在了。
+   *  没有这颗钮时，离开工位回来那条提醒就被静默吃掉（作者报的那条） */
+  const snooze = useCallback((): void => {
+    void reminderSnooze(card.stickyId).catch((error: unknown) =>
+      logger.caught(SCOPE, "稍后再响没落库", error),
+    );
+  }, [card.stickyId]);
 
   return (
     <div className="relative h-screen w-screen select-none">
@@ -116,6 +124,18 @@ export function ReminderCard({ initial }: { initial: ReminderCardPayload }) {
         style={{ color: theme.ink }}
       >
         <X size={13} aria-hidden />
+      </button>
+      {/* 与 × 一样是绝对定位的兄弟（整张卡已经是一颗按钮了，不能再套一颗）；
+          占左下那格，右下那颗"去看这张便签 →"是提示文字不是按钮，两条不会打架 */}
+      <button
+        type="button"
+        aria-label="十分钟后再响"
+        title="十分钟后再响一次"
+        onClick={snooze}
+        className="absolute bottom-1.5 left-3 rounded px-1 text-[11px] font-semibold opacity-60 transition-opacity hover:opacity-100"
+        style={{ color: theme.ink }}
+      >
+        10 分钟后再响
       </button>
     </div>
   );
