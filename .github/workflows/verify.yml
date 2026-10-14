@@ -35,5 +35,10 @@ jobs:
       - name: npm ci
         run: npm ci
 
+      # cargo test 会展开 tauri::generate_context!，它要求 frontendDist（../dist）已存在——
+      # 本地总有历史构建的 dist，CI 检出后没有，先构建前端再进门禁
+      - name: build frontend（产出 dist/ 供 generate_context! 展开）
+        run: npm run build
+
       - name: verify（typecheck + test + lint + format + cargo test + clippy）
         run: npm run verify
