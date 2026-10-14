@@ -5252,7 +5252,7 @@ version = "1.2.13"
 dependencies = [
  "aes-gcm",
  "argon2",
- "base64 0.22.1",
+ "base64 0.23.1",
  "rusqlite",
  "serde",
  "serde_json",
