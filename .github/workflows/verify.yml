@@ -23,7 +23,7 @@ jobs:
           cache: npm
 
       # rustup 是 runner 预装的；只做增量缓存（bundled SQLite 首编很重）
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~\.cargo\registry
