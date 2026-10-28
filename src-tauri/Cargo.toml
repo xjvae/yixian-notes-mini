@@ -27,7 +27,7 @@ aes-gcm = "0.10"
 base64 = "0.22"
 zeroize = "1.8"
 # bundled SQLite：与 TS 检索（FTS5 中文二字组，ROADMAP M2）共用一个编译单元
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite = { version = "0.41.0", features = ["bundled"] }
 # Win32：monitor_work_area 取工作区（贴边细丝不压任务栏）+ WH_MOUSE_LL 长按右键钩子
 # （吞 down + 阈值 + 补偿注入）+ 前台进程白名单采样（OpenProcess/QueryFullProcessImageNameW）
 windows = { version = "0.62", features = [
